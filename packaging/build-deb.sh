@@ -8,7 +8,7 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "${1:-}" = "--docker" ]; then
     IMG="${2:-ubuntu:26.04}"
     docker run --rm -v "$SRC:/src:ro" -v "$SRC/dist:/dist" "$IMG" bash -c \
-        'apt-get update -q >/dev/null && apt-get install -y -q python3 python3-venv python3-pip binutils >/dev/null && cp -r /src /build && cd /build && packaging/build-deb.sh && cp dist/*.deb /dist/'
+        'apt-get update -q >/dev/null && apt-get install -y -q python3 python3-venv python3-pip >/dev/null && cp -r /src /build && cd /build && packaging/build-deb.sh && cp dist/*.deb /dist/'
     exit 0
 fi
 VER=$(python3 -c "import re;print(re.search(r'version = \"([^\"]+)\"', open('$SRC/pyproject.toml').read()).group(1))")
@@ -39,8 +39,6 @@ Description: Hypervisor backup server and proxy agent
  Backs up running VMs from vCenter, ESXi and Proxmox into one deduplicated
  store on Linux, restores them, and converts between platforms.
 CTL
-echo "/etc/hvbackup/hvbackup.conf" > "$P/DEBIAN/conffiles" 2>/dev/null || true
-: > "$P/DEBIAN/conffiles"
 mkdir -p "$SRC/dist"
 dpkg-deb --build --root-owner-group "$P" "$SRC/dist/hvbackup_${VER}-1~${REL}_amd64.deb" >/dev/null
 rm -rf "$W"

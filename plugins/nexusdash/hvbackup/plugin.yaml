@@ -1,0 +1,65 @@
+# Nexus Dashboard declarative plug-in for hvbackup (schema 1, dashboard >= 3.0.0).
+# Install: copy this directory to <dashboard>/plugins/hvbackup, restart the dashboard,
+# enable "VM Backup" on the Modules page. Commands run the hvbackup CLI with the
+# read-only client config of the dashboard's service user (see README.md).
+schema: 1
+id: hvbackup
+label: VM Backup
+category: Compute
+category_order: 60
+min_app_version: "3.0.0"
+version: "0.1"
+
+service:
+  unit: hvbackup
+  name: hvbackup server
+  binary: /opt/hvbackup/venv/bin/hvbackup
+dashboard_card: true
+
+pages:
+  - id: hvbackup
+    label: VM Backup
+    icon: pkg
+    widgets:
+      - type: service_status
+        title: Backup server
+
+      - type: command_table
+        title: Status
+        command: [/usr/local/bin/hvbackup, status, --tsv]
+        refresh_seconds: 30
+        parse: {mode: tsv, skip_lines: 0}
+        columns:
+          - {title: VMs, index: 0}
+          - {title: Protected, index: 1}
+          - {title: Restore points, index: 2}
+          - {title: Jobs, index: 3}
+          - {title: Running, index: 4}
+          - {title: Failed 24h, index: 5}
+          - {title: Proxies online, index: 6}
+          - {title: Repo used, index: 7}
+          - {title: Repo free, index: 8}
+
+      - type: command_table
+        title: Recent runs
+        command: [/usr/local/bin/hvbackup, --json, runs, list, --limit, "25"]
+        refresh_seconds: 30
+        parse: {mode: json_lines}
+        columns:
+          - {title: VM, key: vm_name}
+          - {title: Job, key: job_name}
+          - {title: Started, key: started, transform: epoch_ago}
+          - {title: Status, key: status}
+          - {title: Kind, key: kind}
+          - {title: Read, key: bytes_read, transform: human_bytes}
+          - {title: Error, key: error}
+
+      - type: iframe
+        title: Backup console
+        src: https://localhost:8460/
+        height: 900
+
+      - type: log_tail
+        title: Server log
+        unit: hvbackup
+        lines: 100

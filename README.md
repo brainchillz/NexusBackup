@@ -247,6 +247,53 @@ removed, so a run in progress cannot lose data.
 The proxy only ever sees the server URL, its own token, and whatever disk the
 server attached to it. It cannot talk to vCenter.
 
+## vSphere Client plug-in
+
+hvbackup registers itself with vCenter as a remote plug-in, so backups and restores
+can be started from the vSphere Client without opening the hvbackup console.
+
+```bash
+# HVB_URL must be the public https URL of this server (vCenter fetches the manifest from it)
+hvbackup vsphere-plugin register --connection <id>     # or update / unregister / status
+```
+
+Registration writes an extension record to vCenter's ExtensionManager with the
+manifest URL `https://<server>:8460/vsphere-plugin/plugin.json` and the SHA-256
+thumbprint of the server certificate, so a self-signed certificate works. vCenter
+downloads the manifest within a minute and the vSphere Client shows a "plug-in
+deployed" notification. Re-run `register` (it updates in place) after changing
+`HVB_URL` or the certificate.
+
+What appears in the vSphere Client:
+
+| Where | What |
+|---|---|
+| Menu → hvbackup | global view: status tiles, running tasks, recent runs, protected VMs, link to the full console |
+| VM → Summary | an hvbackup card: protection state, restore points, last backup, last run, Back up now |
+| VM → Monitor → Backups | restore points with Restore…, run history, Back up now |
+| VM right-click → Back up now with hvbackup | modal, works on a multi-selection |
+| VM right-click → Restore with hvbackup | modal: restore point, name, host, datastore, power on, new identity |
+
+Every hvbackup backup and restore also appears in vCenter's **Recent Tasks** on the
+VM, and posts an event (`net.onthenile.hvbackup.backup.done` / `.failed`) you
+can attach vCenter alarms to. Both are best effort: they need the plug-in to be
+registered and the connection account to hold the Task.Create privilege.
+
+**Who is the user?** The plug-in pages never see a password. The vSphere Client
+hands them a session token, hvbackup exchanges it with vCenter for a clone ticket,
+clones the session and reads the user name, then signs the user into hvbackup
+with the same username (domain stripped: `jane@corp.example` and
+`CORP\jane` both become `jane`). The hvbackup account must already exist with
+the role you want; roles are not taken from vCenter. To map differently, set in
+`/etc/hvbackup/hvbackup.conf`:
+
+```
+HVB_VSPHERE_USER_MAP=administrator@vsphere.local=admin,ops@corp.example=operator1
+```
+
+The plug-in pages talk to hvbackup through vCenter's reverse proxy, so the
+browser needs no direct route to the backup server; vCenter does.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

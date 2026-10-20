@@ -461,10 +461,16 @@ Not yet done from the original scope: server-driven deployment of the proxy
 appliance (today: `install.sh --agent` on any small Linux VM).
 Exit criteria still open: two weeks of nightly runs with verified restores.
 
-### Phase 2 — vCenter plug-in
-Manifest, registration, VM action and views, task mirroring, custom events.
-Exit criteria: backup and restore of a VM driven entirely from the vSphere
-Client.
+### Phase 2 — vCenter plug-in (built 2026-10-20, awaiting visual check)
+Delivered: generated manifest (`/vsphere-plugin/plugin.json`), global view, VM
+summary card, VM Monitor "Backups" tab, right-click Back up now (multi-select)
+and Restore modals, registration via `hvbackup vsphere-plugin register`
+(ExtensionManager, SHA-256 thumbprint + PEM certificate, task and event
+types), session delegation (vSphere Client session token -> clone ticket ->
+CloneSession -> username -> short-lived hvbackup bearer token), runs
+mirrored into Recent Tasks and posted as custom events. Registered on the lab
+vCenter. Exit criteria: backup and restore driven entirely from the vSphere
+Client, to be confirmed in the lab.
 
 ### Phase 2b — Nexus Dashboard plug-in (declarative tier shipped)
 `plugins/nexusdash/hvbackup/plugin.yaml`: service card, status table from

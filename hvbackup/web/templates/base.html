@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} · hvbackup</title>
+<link rel="stylesheet" href="/static/app.css">
+<script>window.USER = {{ user | tojson }};</script>
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">hvbackup <small>v{{ version }}</small></div>
+    <nav class="nav">
+      {% for href, label in nav %}<a href="{{ href }}" class="{% if path == href or (href != '/' and path.startswith(href)) %}active{% endif %}">{{ label }}</a>{% endfor %}
+    </nav>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <h1>{{ title }}</h1>
+      <div class="who"><span>{{ user.username }}</span><span class="badge">{{ user.role }}</span><button class="btn sm" id="logout">Sign out</button></div>
+    </header>
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('logout').onclick = async () => { await api('POST', '/api/v1/auth/logout'); location.href = '/login'; };
+});
+</script>
+{% block script %}{% endblock %}
+</body>
+</html>

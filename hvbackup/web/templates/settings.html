@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card"><h2>Repository</h2><dl class="kv" id="repo"></dl><div class="toolbar" style="margin-top:10px"><button class="btn" id="gc" hidden>Run garbage collection</button><a class="btn" href="/api/docs" target="_blank">API documentation</a></div></div>
+<div class="card"><h2>API tokens</h2><p class="muted">Tokens act with the owner's role. Send them as <span class="mono">Authorization: Bearer hvb_…</span>; the CLI reads <span class="mono">HVB_TOKEN</span>.</p><div class="toolbar"><button class="btn primary" id="newtoken">New token</button></div><div id="tokens"></div></div>
+<div class="card" id="userscard" hidden><h2>Users</h2><div class="toolbar"><button class="btn primary" id="newuser">Add user</button></div><div id="users"></div></div>
+<div class="card" id="auditcard" hidden><h2>Audit log</h2><div id="audit"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const admin = can('admin');
+  document.getElementById('gc').hidden = !admin; document.getElementById('userscard').hidden = !admin; document.getElementById('auditcard').hidden = !admin;
+  async function loadRepo() {
+    const st = await api('GET', '/api/v1/status');
+    const r = st.repository;
+    document.getElementById('repo').innerHTML = [['Path', `<span class="mono">${esc(r.path)}</span>`], ['Repository ID', `<span class="mono">${esc(r.id)}</span>`], ['Chunks', esc(r.chunks)], ['Stored', esc(fmtBytes(r.stored_bytes))],
+      ['Free on volume', esc(fmtBytes(r.free_bytes)) + ' of ' + esc(fmtBytes(r.total_bytes))], ['Last garbage collection', esc(st.last_gc ? fmtTime(st.last_gc) : 'never')], ['Server version', esc(st.version)]].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  }
+  async function loadTokens() {
+    renderTable(document.getElementById('tokens'), [
+      { h: 'Name', f: t => esc(t.name) }, { h: 'Owner', f: t => esc(t.username) }, { h: 'Prefix', f: t => `<span class="mono">${esc(t.prefix)}…</span>` },
+      { h: 'Created', f: t => esc(fmtTime(t.created)) }, { h: 'Last used', f: t => titleTime(t.last_used) },
+      { h: '', f: t => `<button class="btn sm danger" data-a="deltoken" data-id="${t.id}">Revoke</button>` },
+    ], await api('GET', '/api/v1/tokens'), 'No tokens.');
+  }
+  async function loadUsers() {
+    if (!admin) return;
+    renderTable(document.getElementById('users'), [
+      { h: 'Username', f: u => esc(u.username) }, { h: 'Role', f: u => badge(u.role, u.role === 'admin' ? 'info' : '') }, { h: 'Created', f: u => esc(fmtTime(u.created)) },
+      { h: '', f: u => `<button class="btn sm" data-a="role" data-u="${esc(u.username)}" data-role="${esc(u.role)}">Role</button> <button class="btn sm" data-a="pw" data-u="${esc(u.username)}">Password</button> <button class="btn sm danger" data-a="deluser" data-u="${esc(u.username)}">Delete</button>` },
+    ], await api('GET', '/api/v1/users'));
+    renderTable(document.getElementById('audit'), [
+      { h: 'Time', f: a => esc(fmtTime(a.ts)) }, { h: 'User', f: a => esc(a.user || '') }, { h: 'Action', f: a => esc(a.action) }, { h: 'Detail', f: a => esc(a.detail || '') },
+    ], await api('GET', '/api/v1/audit?limit=100'), 'Nothing logged yet.');
+  }
+  loadRepo(); loadTokens(); loadUsers();
+  document.getElementById('gc').onclick = () => confirmModal('Run garbage collection', 'Remove chunks no restore point references. Chunks written in the last hour are kept.', async () => startedTask(await api('POST', '/api/v1/maintenance/gc'), 'GC started'));
+  document.getElementById('newtoken').onclick = () => modal({ title: 'New API token', body: `<label class="f"><span>Name</span><input name="name" placeholder="cli on my laptop"></label>${admin ? '<label class="f"><span>For user (blank = me)</span><input name="username"></label>' : ''}`,
+    buttons: [{ label: 'Cancel' }, { label: 'Create', cls: 'primary', onClick: async m => {
+      const res = await api('POST', '/api/v1/tokens', { name: val(m, 'name'), username: val(m, 'username') || null });
+      loadTokens();
+      modal({ title: 'Token created', sticky: true, body: `<p>Shown once. Store it now.</p><code class="box">${esc(res.token)}</code><p class="muted mono">export HVB_URL=${esc(location.origin)} HVB_TOKEN=${esc(res.token)}</p>`,
+        buttons: [{ label: 'Copy', onClick: async () => { await navigator.clipboard.writeText(res.token); toast('Copied'); return false; } }, { label: 'Done' }] });
+    } }] });
+  document.getElementById('newuser').onclick = () => modal({ title: 'Add user', body: `<label class="f"><span>Username</span><input name="username" pattern="[a-z0-9][a-z0-9._-]*"></label><label class="f"><span>Password</span><input name="password" type="password" autocomplete="new-password"></label>
+    <label class="f"><span>Role</span><select name="role"><option>viewer</option><option>restore</option><option>operator</option><option>admin</option></select></label>`,
+    buttons: [{ label: 'Cancel' }, { label: 'Add', cls: 'primary', onClick: async m => { await api('POST', '/api/v1/users', { username: val(m, 'username'), password: val(m, 'password'), role: val(m, 'role') }); loadUsers(); } }] });
+  document.body.addEventListener('click', async e => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const a = b.dataset.a, u = b.dataset.u;
+    if (a === 'deltoken') confirmModal('Revoke token', 'Revoke this token? Anything using it stops working.', async () => { await api('DELETE', `/api/v1/tokens/${b.dataset.id}`); loadTokens(); }, 'danger');
+    if (a === 'deluser') confirmModal('Delete user', `Delete user "${u}" and their tokens?`, async () => { await api('DELETE', `/api/v1/users/${u}`); loadUsers(); }, 'danger');
+    if (a === 'pw') modal({ title: `Set password for ${u}`, body: `<label class="f"><span>New password</span><input name="password" type="password" autocomplete="new-password"></label>`, buttons: [{ label: 'Cancel' }, { label: 'Set', cls: 'primary', onClick: async m => { await api('PATCH', `/api/v1/users/${u}`, { password: val(m, 'password') }); toast('Password set'); } }] });
+    if (a === 'role') modal({ title: `Role for ${u}`, body: `<label class="f"><span>Role</span><select name="role">${['viewer', 'restore', 'operator', 'admin'].map(r => `<option ${r === b.dataset.role ? 'selected' : ''}>${r}</option>`).join('')}</select></label>`, buttons: [{ label: 'Cancel' }, { label: 'Save', cls: 'primary', onClick: async m => { await api('PATCH', `/api/v1/users/${u}`, { role: val(m, 'role') }); loadUsers(); } }] });
+  });
+});
+</script>
+{% endblock %}

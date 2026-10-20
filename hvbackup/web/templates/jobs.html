@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar"><span class="muted">A job backs up a set of VMs on one connection, on a cron schedule, keeping restore points by the retention rule.</span><span class="spacer"></span><button class="btn primary" id="add" hidden>New job</button></div>
+<div class="card"><div id="list"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  if (can('operator')) document.getElementById('add').hidden = false;
+  const el = document.getElementById('list');
+  let jobs = [];
+  async function load() {
+    jobs = await api('GET', '/api/v1/jobs');
+    renderTable(el, [
+      { h: 'Name', f: j => `<b>${esc(j.name)}</b>${j.enabled ? '' : ' ' + badge('disabled', 'warn')}` },
+      { h: 'Connection', f: j => esc(j.connection_name) },
+      { h: 'VMs', f: j => `<span title="${esc(j.vm_names.join(', '))}">${j.vm_names.length}</span>`, cls: 'num' },
+      { h: 'Schedule', f: j => j.schedule ? `<span class="mono">${esc(j.schedule)}</span>` : '<span class="muted">manual</span>' },
+      { h: 'Next run', f: j => j.enabled && j.next_run ? `<span title="${esc(fmtTime(j.next_run))}">${esc(until(j.next_run))}</span>` : '' },
+      { h: 'Last run', f: j => (j.last_status ? stateBadge(j.last_status) + ' ' : '') + titleTime(j.last_run) },
+      { h: 'Retention', f: j => esc([j.retention.keep_last ? `last ${j.retention.keep_last}` : '', j.retention.keep_days ? `${j.retention.keep_days} days` : ''].filter(Boolean).join(', ') || 'keep all') },
+      { h: '', f: j => can('operator') ? `<button class="btn sm primary" data-a="run" data-id="${j.id}">Run now</button> <button class="btn sm" data-a="edit" data-id="${j.id}">Edit</button> <button class="btn sm" data-a="toggle" data-id="${j.id}">${j.enabled ? 'Disable' : 'Enable'}</button> <button class="btn sm danger" data-a="del" data-id="${j.id}">Delete</button>` : '' },
+    ], jobs, 'No jobs yet. Create one here, or select VMs on the Virtual machines page and choose Protect.');
+    return true;
+  }
+  pollWhile(load, 15000);
+  document.getElementById('add').onclick = () => jobDialog(null);
+  document.addEventListener('jobs-changed', load);
+  el.addEventListener('click', async e => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const j = jobs.find(x => String(x.id) === b.dataset.id);
+    if (b.dataset.a === 'run') startedTask(await api('POST', `/api/v1/jobs/${j.id}/run`), `Job "${j.name}" started`);
+    if (b.dataset.a === 'edit') jobDialog(j);
+    if (b.dataset.a === 'toggle') { await api('PATCH', `/api/v1/jobs/${j.id}`, { enabled: !j.enabled }); load(); }
+    if (b.dataset.a === 'del') confirmModal('Delete job', `Delete job "${j.name}"? Restore points are kept.`, async () => { await api('DELETE', `/api/v1/jobs/${j.id}`); load(); }, 'danger');
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,20 @@
+[Unit]
+Description=hvbackup hypervisor backup server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hvbackup
+Group=hvbackup
+EnvironmentFile=-/etc/hvbackup/hvbackup.conf
+ExecStart=/opt/hvbackup/venv/bin/hvbackup server
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/hvbackup
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=hvbackup proxy agent (runs inside a proxy VM on the hypervisor cluster)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-/etc/hvbackup/agent.conf
+ExecStart=/opt/hvbackup/venv/bin/hvbackup-agent
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar"><span class="muted">vCenter servers and standalone ESXi hosts this server backs up from.</span><span class="spacer"></span><button class="btn primary" id="add" hidden>Add connection</button></div>
+<div class="card"><div id="list"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  if (can('admin')) document.getElementById('add').hidden = false;
+  const el = document.getElementById('list');
+  async function load() {
+    const rows = await api('GET', '/api/v1/connections');
+    renderTable(el, [
+      { h: 'Name', f: c => `<b>${esc(c.name)}</b>` },
+      { h: 'Type', f: c => badge(c.type, 'info') },
+      { h: 'Host', f: c => `<span class="mono">${esc(c.host)}</span>` },
+      { h: 'User', f: c => esc(c.username) },
+      { h: 'VMs', f: c => esc(c.vm_count), cls: 'num' },
+      { h: 'Proxies', f: c => c.proxies_online ? badge(c.proxies_online + ' online', 'ok') : badge('none', 'warn') },
+      { h: 'Inventory', f: c => c.last_error ? badge('error', 'bad') + ` <span class="muted" title="${esc(c.last_error)}">${esc(c.last_error.slice(0, 50))}</span>` : titleTime(c.last_inventory) },
+      { h: '', f: c => (can('operator') ? `<button class="btn sm" data-a="refresh" data-id="${c.id}">Refresh</button> ` : '') +
+          (can('admin') ? `<button class="btn sm" data-a="test" data-id="${c.id}">Test</button> <button class="btn sm" data-a="edit" data-id="${c.id}">Edit</button> <button class="btn sm danger" data-a="del" data-id="${c.id}" data-name="${esc(c.name)}">Delete</button>` : '') },
+    ], rows, 'No connections yet.');
+    return true;
+  }
+  const stop = pollWhile(load, 10000);
+  function form(c) {
+    c = c || { type: 'vcenter', name: '', host: '', username: 'administrator@vsphere.local', verify_ssl: false };
+    return `<div class="row">
+      <label class="f"><span>Type</span><select name="type" ${c.id ? 'disabled' : ''}><option value="vcenter" ${c.type === 'vcenter' ? 'selected' : ''}>vCenter</option><option value="esxi" ${c.type === 'esxi' ? 'selected' : ''}>Standalone ESXi</option><option value="proxmox" ${c.type === 'proxmox' ? 'selected' : ''}>Proxmox VE (later phase)</option></select></label>
+      <label class="f"><span>Name</span><input name="name" value="${esc(c.name)}" placeholder="lab-vcenter"></label></div>
+      <label class="f"><span>Host or address</span><input name="host" value="${esc(c.host)}" placeholder="vcenter.example.net"></label>
+      <div class="row"><label class="f"><span>Username</span><input name="username" value="${esc(c.username)}"></label>
+      <label class="f"><span>Password${c.id ? ' (leave blank to keep)' : ''}</span><input name="password" type="password" autocomplete="new-password"></label></div>
+      <label class="c"><input type="checkbox" name="verify_ssl" ${c.verify_ssl ? 'checked' : ''}> Verify the TLS certificate</label>
+      <p class="muted">Use a dedicated service account with a role limited to backup privileges. The password is encrypted at rest.</p>`;
+  }
+  document.getElementById('add').onclick = () => modal({ title: 'Add connection', body: form(), buttons: [{ label: 'Cancel' }, { label: 'Add', cls: 'primary', onClick: async m => {
+    const res = await api('POST', '/api/v1/connections', { type: val(m, 'type'), name: val(m, 'name'), host: val(m, 'host'), username: val(m, 'username'), password: val(m, 'password'), verify_ssl: val(m, 'verify_ssl') });
+    startedTask(res, 'Connection added, inventory refresh started'); load();
+  } }] });
+  el.addEventListener('click', async e => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const id = b.dataset.id;
+    if (b.dataset.a === 'refresh') { startedTask(await api('POST', `/api/v1/connections/${id}/refresh`), 'Inventory refresh started'); }
+    if (b.dataset.a === 'test') { b.disabled = true; try { const r = await api('POST', `/api/v1/connections/${id}/test`); toast(`OK: ${r.name} (API ${r.version})`); } catch (err) { toast('Failed: ' + err.message, 6000); } b.disabled = false; }
+    if (b.dataset.a === 'del') confirmModal('Delete connection', `Delete "${b.dataset.name}"? Its VMs, jobs and restore points in the catalog go with it.`, async () => { await api('DELETE', `/api/v1/connections/${id}`); load(); }, 'danger');
+    if (b.dataset.a === 'edit') {
+      const c = (await api('GET', '/api/v1/connections')).find(x => String(x.id) === id);
+      modal({ title: 'Edit connection', body: form(c), buttons: [{ label: 'Cancel' }, { label: 'Save', cls: 'primary', onClick: async m => {
+        const body = { name: val(m, 'name'), host: val(m, 'host'), username: val(m, 'username'), verify_ssl: val(m, 'verify_ssl') };
+        if (val(m, 'password')) body.password = val(m, 'password');
+        await api('PATCH', `/api/v1/connections/${id}`, body); toast('Saved'); load();
+      } }] });
+    }
+  });
+});
+</script>
+{% endblock %}

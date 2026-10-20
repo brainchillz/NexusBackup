@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · hvbackup</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<div class="login">
+  <div class="card">
+    <div class="brand">hvbackup <small>v{{ version }}</small></div>
+    <form id="f">
+      <label class="f"><span>Username</span><input name="username" autocomplete="username" autofocus required></label>
+      <label class="f"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
+      <div class="err" id="err" style="color:var(--bad);min-height:1.2em"></div>
+      <button class="btn primary" type="submit">Sign in</button>
+    </form>
+  </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const f = document.getElementById('f');
+  f.onsubmit = async e => {
+    e.preventDefault();
+    document.getElementById('err').textContent = '';
+    try {
+      await api('POST', '/api/v1/auth/login', { username: f.username.value, password: f.password.value });
+      const next = new URLSearchParams(location.search).get('next') || '/';
+      location.href = next.startsWith('/') ? next : '/';
+    } catch (err) { document.getElementById('err').textContent = err.message; }
+  };
+});
+</script>
+</body>
+</html>

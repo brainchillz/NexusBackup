@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar"><select id="state"><option value="">All states</option><option>running</option><option>queued</option><option>done</option><option>failed</option><option>cancelled</option></select><span class="muted" id="hint"></span></div>
+<div class="card"><div id="list"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('list');
+  let tasks = [];
+  function draw() {
+    const s = document.getElementById('state').value;
+    const rows = tasks.filter(t => !s || t.state === s);
+    renderTable(el, [
+      { h: 'ID', f: t => `<a href="/tasks/${t.id}">#${t.id}</a>`, cls: 'num' },
+      { h: 'Kind', f: t => esc(t.kind) },
+      { h: 'Subject', f: t => esc(t.subject || '') },
+      { h: 'State', f: t => stateBadge(t.state) },
+      { h: 'Progress', f: t => progressBar(t.progress, t.state) },
+      { h: 'Message', f: t => `<span title="${esc(t.message || '')}">${esc((t.message || '').slice(0, 90))}</span>` },
+      { h: 'By', f: t => esc(t.created_by || '') },
+      { h: 'Started', f: t => titleTime(t.started || t.created) },
+      { h: 'Duration', f: t => esc(dur(t.started, t.finished)) },
+      { h: '', f: t => can('operator') && (t.state === 'running' || t.state === 'queued') ? `<button class="btn sm danger" data-a="cancel" data-id="${t.id}">Cancel</button>` : '' },
+    ], rows, 'No tasks.');
+    const running = tasks.filter(t => t.state === 'running').length;
+    document.getElementById('hint').textContent = running ? `${running} running, refreshing every 2 s` : '';
+    return running;
+  }
+  let fast = false, stop = null;
+  function schedule() {
+    if (stop) stop();
+    stop = pollWhile(async () => { tasks = await api('GET', '/api/v1/tasks?limit=200'); const running = draw() > 0; if (running !== fast) { fast = running; schedule(); return false; } return true; }, fast ? 2000 : 8000);
+  }
+  schedule();
+  document.addEventListener('task-started', () => { fast = true; schedule(); });
+  document.getElementById('state').oninput = draw;
+  el.addEventListener('click', async e => {
+    const b = e.target.closest('button[data-a=cancel]'); if (!b) return;
+    await api('POST', `/api/v1/tasks/${b.dataset.id}/cancel`); toast('Cancellation requested');
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card"><h2 id="head">Task {{ task_id }}</h2><dl class="kv" id="facts"></dl><div style="margin-top:10px" id="bar"></div><div class="toolbar" style="margin-top:10px"><button class="btn danger" id="cancel" hidden>Cancel</button><a class="btn" href="/tasks">All tasks</a></div></div>
+<div class="card"><h2>Log</h2><pre class="log" id="log"></pre></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const id = {{ task_id }};
+  const logEl = document.getElementById('log');
+  async function load() {
+    const t = await api('GET', `/api/v1/tasks/${id}`);
+    document.getElementById('head').textContent = `Task #${t.id}: ${t.kind}${t.subject ? ' · ' + t.subject : ''}`;
+    document.getElementById('facts').innerHTML = [
+      ['State', stateBadge(t.state)], ['Message', esc(t.message || '')], ['Created by', esc(t.created_by || '')],
+      ['Created', esc(fmtTime(t.created))], ['Started', esc(fmtTime(t.started))], ['Finished', esc(fmtTime(t.finished))], ['Duration', esc(dur(t.started, t.finished))],
+    ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    document.getElementById('bar').innerHTML = progressBar(t.progress, t.state) + `<div class="muted" style="margin-top:4px">${Math.round((t.progress || 0) * 100)}%</div>`;
+    const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+    logEl.textContent = t.log || '';
+    if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+    const active = t.state === 'running' || t.state === 'queued';
+    document.getElementById('cancel').hidden = !(active && can('operator'));
+    return active;
+  }
+  pollWhile(load, 2000);
+  document.getElementById('cancel').onclick = async () => { await api('POST', `/api/v1/tasks/${id}/cancel`); toast('Cancellation requested'); setTimeout(load, 1500); };
+});
+</script>
+{% endblock %}

@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+install -d -m 750 /etc/hvbackup
+if [ ! -f /etc/hvbackup/agent.conf ]; then
+    id hvbackup >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -d /var/lib/hvbackup hvbackup
+    install -d -m 750 -o hvbackup -g hvbackup /var/lib/hvbackup
+    if [ ! -f /etc/hvbackup/hvbackup.conf ]; then
+        cp /opt/hvbackup/share/hvbackup.conf.example /etc/hvbackup/hvbackup.conf
+        chmod 640 /etc/hvbackup/hvbackup.conf; chgrp hvbackup /etc/hvbackup/hvbackup.conf
+    fi
+    systemctl daemon-reload || true
+    systemctl enable hvbackup >/dev/null 2>&1 || true
+    systemctl restart hvbackup || true
+else
+    systemctl daemon-reload || true
+    systemctl enable hvbackup-agent >/dev/null 2>&1 || true
+    systemctl restart hvbackup-agent || true
+fi
+ln -sf /opt/hvbackup/venv/bin/hvbackup /usr/local/bin/hvbackup

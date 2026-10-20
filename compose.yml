@@ -1,0 +1,19 @@
+# hvbackup server in Docker. Two pieces of storage:
+#   hvbackup-data   named volume: catalog, secrets, certificate (small, keep it)
+#   HVB_REPO_HOST   host directory that backups land in (large; set it in .env)
+services:
+  hvbackup:
+    build: .
+    image: hvbackup:latest
+    container_name: hvbackup
+    restart: unless-stopped
+    ports:
+      - "8460:8460"
+    environment:
+      HVB_URL: ${HVB_URL:-}
+      HVB_LOG_LEVEL: ${HVB_LOG_LEVEL:-info}
+    volumes:
+      - hvbackup-data:/var/lib/hvbackup
+      - ${HVB_REPO_HOST:-./repo}:/var/lib/hvbackup/repo
+volumes:
+  hvbackup-data:

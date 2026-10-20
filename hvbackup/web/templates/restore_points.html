@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar"><select id="vm"><option value="">All VMs</option></select><span class="muted">Every restore point is a complete image: restoring never needs the chain of earlier ones.</span></div>
+<div class="card"><div id="list"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('list'), vmSel = document.getElementById('vm');
+  let rps = [];
+  function draw() {
+    const v = vmSel.value;
+    const rows = rps.filter(r => !v || String(r.vm_id) === v);
+    renderTable(el, [
+      { h: 'ID', f: r => esc(r.id), cls: 'num' },
+      { h: 'VM', f: r => `<a href="/vms/${r.vm_id}">${esc(r.vm_name)}</a>` },
+      { h: 'Created', f: r => esc(fmtTime(r.created)) + ` <span class="muted">${esc(ago(r.created))}</span>` },
+      { h: 'Kind', f: r => esc(r.kind) },
+      { h: 'Disk size', f: r => esc(fmtBytes(r.size_bytes)), cls: 'num' },
+      { h: 'Allocated', f: r => esc(fmtBytes(r.allocated_bytes)), cls: 'num' },
+      { h: '', f: r => (can('restore') ? `<button class="btn sm primary" data-a="restore" data-id="${r.id}">Restore…</button> ` : '') + (can('operator') ? `<button class="btn sm danger" data-a="del" data-id="${r.id}">Delete</button>` : '') },
+    ], rows, 'No restore points yet.');
+  }
+  async function load() {
+    rps = await api('GET', '/api/v1/restore-points');
+    const names = new Map(rps.map(r => [r.vm_id, r.vm_name]));
+    const cur = vmSel.value;
+    vmSel.innerHTML = '<option value="">All VMs</option>' + [...names].sort((a, b) => a[1].localeCompare(b[1])).map(([id, n]) => `<option value="${id}">${esc(n)}</option>`).join('');
+    vmSel.value = cur;
+    draw(); return true;
+  }
+  pollWhile(load, 15000);
+  vmSel.oninput = draw;
+  el.addEventListener('click', e => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const rp = rps.find(r => String(r.id) === b.dataset.id);
+    if (b.dataset.a === 'restore') restoreDialog(rp, rp.vm_name, rp.connection_id);
+    if (b.dataset.a === 'del') confirmModal('Delete restore point', `Delete restore point ${rp.id} of ${rp.vm_name}? If it is the newest, the next backup is a full. Space is reclaimed by the nightly garbage collection.`, async () => { await api('DELETE', `/api/v1/restore-points/${rp.id}`); load(); }, 'danger');
+  });
+});
+</script>
+{% endblock %}

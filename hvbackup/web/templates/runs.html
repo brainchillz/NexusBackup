@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar"><select id="status"><option value="">All statuses</option><option>done</option><option>failed</option><option>running</option><option>cancelled</option></select><input id="filter" placeholder="Filter by VM or job…"></div>
+<div class="card"><div id="list"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('list');
+  let runs = [];
+  function draw() {
+    const s = document.getElementById('status').value, f = document.getElementById('filter').value.toLowerCase();
+    const rows = runs.filter(r => (!s || r.status === s) && (!f || `${r.vm_name} ${r.job_name || ''}`.toLowerCase().includes(f)));
+    renderTable(el, [
+      { h: 'VM', f: r => `<a href="/vms/${r.vm_id}">${esc(r.vm_name)}</a>` },
+      { h: 'Job', f: r => esc(r.job_name || 'manual') },
+      { h: 'Started', f: r => esc(fmtTime(r.started)) },
+      { h: 'Duration', f: r => esc(dur(r.started, r.finished)) },
+      { h: 'Kind', f: r => esc(r.kind || '') },
+      { h: 'Transport', f: r => esc(r.transport || '') },
+      { h: 'Read', f: r => esc(fmtBytes(r.bytes_read)), cls: 'num' },
+      { h: 'Restore point', f: r => r.restore_point_id ? esc(r.restore_point_id) : '' , cls: 'num' },
+      { h: 'Status', f: r => stateBadge(r.status) + (r.error ? ` <span class="muted" title="${esc(r.error)}">${esc(r.error.slice(0, 70))}</span>` : '') },
+      { h: '', f: r => r.task_id ? `<a href="/tasks/${r.task_id}">log</a>` : '' },
+    ], rows, 'No runs recorded.');
+  }
+  pollWhile(async () => { runs = await api('GET', '/api/v1/runs?limit=300'); draw(); return true; }, 10000);
+  document.getElementById('status').oninput = draw; document.getElementById('filter').oninput = draw;
+});
+</script>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar"><span class="muted">A proxy is a small VM on each vSphere cluster. It holds no credentials; the server hot-adds disks to it and its agent streams the blocks here. Powered-off VMs need no proxy.</span><span class="spacer"></span><button class="btn primary" id="add" hidden>New proxy</button></div>
+<div class="card"><div id="list"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  if (can('admin')) document.getElementById('add').hidden = false;
+  const el = document.getElementById('list');
+  async function load() {
+    const rows = await api('GET', '/api/v1/proxies');
+    renderTable(el, [
+      { h: 'Name', f: p => `<b>${esc(p.name)}</b>` },
+      { h: 'State', f: p => p.online ? badge('online', 'ok') : badge('offline', 'bad') },
+      { h: 'Connection', f: p => p.connection_name ? esc(p.connection_name) : '<span class="muted">not seen on any connection yet</span>' },
+      { h: 'VM', f: p => p.vm_moref ? `<span class="mono">${esc(p.vm_moref)}</span>` : '' },
+      { h: 'Address', f: p => `<span class="mono">${esc(p.address || '')}</span>` },
+      { h: 'Agent', f: p => esc(p.version || '') },
+      { h: 'Last seen', f: p => titleTime(p.last_seen) },
+      { h: 'Token', f: p => `<span class="mono">${esc(p.prefix)}…</span>` },
+      { h: '', f: p => can('admin') ? `<button class="btn sm danger" data-a="del" data-id="${p.id}" data-name="${esc(p.name)}">Delete</button>` : '' },
+    ], rows, 'No proxies registered.');
+    return true;
+  }
+  pollWhile(load, 10000);
+  document.getElementById('add').onclick = async () => {
+    const conns = await api('GET', '/api/v1/connections');
+    modal({ title: 'New proxy', body: `<label class="f"><span>Name</span><input name="name" placeholder="proxy-cluster1"></label>
+      <label class="f"><span>Connection (optional; detected automatically when the proxy VM appears in an inventory)</span><select name="connection_id"><option value="">detect</option>${conns.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>`,
+      buttons: [{ label: 'Cancel' }, { label: 'Create', cls: 'primary', onClick: async m => {
+        const res = await api('POST', '/api/v1/proxies', { name: val(m, 'name'), connection_id: val(m, 'connection_id') ? Number(val(m, 'connection_id')) : null });
+        load();
+        const conf = `HVB_URL=${location.origin}\nHVB_PROXY_TOKEN=${res.token}\nHVB_INSECURE=1`;
+        modal({ title: 'Proxy created', sticky: true, body: `<p>This token is shown once. On the proxy VM, as root, write it to <span class="mono">/etc/hvbackup/agent.conf</span>:</p><code class="box">${esc(conf)}</code>
+          <p class="muted">Then install the agent (<span class="mono">pip install hvbackup</span> or the package) and <span class="mono">systemctl enable --now hvbackup-agent</span>. Set <span class="mono">HVB_INSECURE=0</span> and <span class="mono">HVB_CA=/path/to/ca.pem</span> once this server has a trusted certificate.</p>`,
+          buttons: [{ label: 'Copy config', onClick: async () => { await navigator.clipboard.writeText(conf); toast('Copied'); return false; } }, { label: 'Done' }] });
+      } }] });
+  };
+  el.addEventListener('click', e => {
+    const b = e.target.closest('button[data-a=del]'); if (!b) return;
+    confirmModal('Delete proxy', `Delete proxy "${b.dataset.name}"? Its token stops working immediately.`, async () => { await api('DELETE', `/api/v1/proxies/${b.dataset.id}`); load(); }, 'danger');
+  });
+});
+</script>
+{% endblock %}

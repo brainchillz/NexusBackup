@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="cards" id="tiles"></div>
+<div class="card"><h2>Running tasks</h2><div id="running"></div></div>
+<div class="card"><h2>Recent runs</h2><div id="runs"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const tiles = document.getElementById('tiles');
+  async function load() {
+    const [st, tasks, runs] = await Promise.all([api('GET', '/api/v1/status'), api('GET', '/api/v1/tasks?limit=20'), api('GET', '/api/v1/runs?limit=15')]);
+    const rep = st.repository;
+    const used = rep.total_bytes ? (rep.total_bytes - rep.free_bytes) / rep.total_bytes : 0;
+    tiles.innerHTML = `
+      <div class="tile"><div class="label">Virtual machines</div><div class="value">${st.vms}</div><div class="sub">${st.protected_vms} protected · ${st.connections} connection${st.connections === 1 ? '' : 's'}</div></div>
+      <div class="tile"><div class="label">Restore points</div><div class="value">${st.restore_points}</div><div class="sub">${esc(fmtBytes(rep.stored_bytes))} stored in ${rep.chunks} chunks</div></div>
+      <div class="tile ${st.jobs ? '' : ''}"><div class="label">Jobs</div><div class="value">${st.jobs}</div><div class="sub">enabled · last GC ${esc(ago(st.last_gc))}</div></div>
+      <div class="tile ${st.proxies_online ? 'ok' : 'bad'}"><div class="label">Proxies online</div><div class="value">${st.proxies_online}</div><div class="sub">${st.running_tasks} task${st.running_tasks === 1 ? '' : 's'} running</div></div>
+      <div class="tile ${st.failed_runs_24h ? 'bad' : 'ok'}"><div class="label">Failed runs, 24h</div><div class="value">${st.failed_runs_24h}</div><div class="sub">${st.failed_runs_24h ? '<a href="/runs">see runs</a>' : 'all good'}</div></div>
+      <div class="tile"><div class="label">Repository</div><div class="value">${esc(fmtBytes(rep.free_bytes))} free</div><div class="sub mono" title="${esc(rep.path)}">${esc(rep.path)}</div><div class="bar"><div style="width:${Math.round(used * 100)}%"></div></div></div>`;
+    const running = tasks.filter(t => t.state === 'running' || t.state === 'queued');
+    renderTable(document.getElementById('running'), [
+      { h: 'Task', f: t => `<a href="/tasks/${t.id}">#${t.id} ${esc(t.kind)}</a>` },
+      { h: 'Subject', f: t => esc(t.subject) },
+      { h: 'Progress', f: t => progressBar(t.progress, t.state) },
+      { h: 'Status', f: t => esc(t.message || '') },
+      { h: 'Started', f: t => titleTime(t.started || t.created) },
+    ], running, 'No tasks running.');
+    renderTable(document.getElementById('runs'), [
+      { h: 'VM', f: r => `<a href="/vms/${r.vm_id}">${esc(r.vm_name)}</a>` },
+      { h: 'Job', f: r => esc(r.job_name || 'manual') },
+      { h: 'Started', f: r => titleTime(r.started) },
+      { h: 'Duration', f: r => esc(dur(r.started, r.finished)) },
+      { h: 'Kind', f: r => esc(r.kind || '') },
+      { h: 'Read', f: r => esc(fmtBytes(r.bytes_read)), cls: 'num' },
+      { h: 'Status', f: r => stateBadge(r.status) + (r.error ? ` <span class="muted" title="${esc(r.error)}">${esc(r.error.slice(0, 60))}</span>` : '') },
+      { h: '', f: r => r.task_id ? `<a href="/tasks/${r.task_id}">log</a>` : '' },
+    ], runs, 'No backups have run yet. Add a connection, then protect some VMs.');
+    return true;
+  }
+  pollWhile(load, 5000);
+});
+</script>
+{% endblock %}

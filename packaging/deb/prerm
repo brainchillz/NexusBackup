@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+if [ "$1" = remove ]; then
+    systemctl stop hvbackup hvbackup-agent 2>/dev/null || true
+    systemctl disable hvbackup hvbackup-agent 2>/dev/null || true
+fi

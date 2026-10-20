@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card"><h2 id="name">VM</h2><dl class="kv" id="facts"></dl><div class="toolbar" style="margin-top:12px" id="actions"></div></div>
+<div class="card"><h2>Disks</h2><div id="disks"></div></div>
+<div class="card"><h2>Restore points</h2><div id="rps"></div></div>
+<div class="card"><h2>Runs</h2><div id="runs"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const vmId = {{ vm_id }};
+  let v = null;
+  async function load() {
+    v = await api('GET', `/api/v1/vms/${vmId}`);
+    document.getElementById('name').textContent = v.name;
+    const spec = v.spec || {};
+    const place = spec.placement || {};
+    document.getElementById('facts').innerHTML = [
+      ['Power', powerBadge(v.power_state)], ['Guest', esc(v.guest)], ['Host', esc(v.host)], ['Tools', esc(v.tools)],
+      ['CPU / memory', esc(`${spec.cpus || '?'} vCPU, ${fmtBytes((spec.memory_mb || 0) * 1048576)}`)], ['Firmware', esc(spec.firmware) + (spec.secure_boot ? ' + secure boot' : '') + (spec.tpm ? ' + vTPM' : '')],
+      ['Changed block tracking', v.cbt_enabled ? badge('enabled', 'ok') : badge('off', 'warn')], ['Datastores', esc((place.datastores || []).join(', '))],
+      ['Networks', esc((spec.nics || []).map(n => `${n.network} (${n.model}, ${n.mac})`).join('; '))], ['UUID', `<span class="mono">${esc(v.uuid)}</span>`],
+    ].map(([k, val]) => `<dt>${k}</dt><dd>${val}</dd>`).join('');
+    const a = document.getElementById('actions');
+    a.innerHTML = (can('operator') ? '<button class="btn primary" id="backup">Backup now</button>' : '') + (can('restore') && v.restore_points.length ? '<button class="btn" id="restore">Restore latest…</button>' : '');
+    if (can('operator')) document.getElementById('backup').onclick = async () => startedTask(await api('POST', `/api/v1/vms/${vmId}/backup`, { quiesce: true }), 'Backup started');
+    if (document.getElementById('restore')) document.getElementById('restore').onclick = () => restoreDialog(v.restore_points[0], v.name, v.connection_id);
+    renderTable(document.getElementById('disks'), [
+      { h: 'Label', f: d => esc(d.label || d.key) }, { h: 'Capacity', f: d => esc(fmtBytes(d.capacity)), cls: 'num' },
+      { h: 'Controller', f: d => esc(`${d.controller} ${d.bus}:${d.unit}`) }, { h: 'Provisioning', f: d => esc(d.thin ? 'thin' : 'thick') },
+      { h: 'File', f: d => `<span class="mono">${esc(d.file)}</span>` },
+    ], v.disks || []);
+    renderTable(document.getElementById('rps'), [
+      { h: 'ID', f: r => esc(r.id) }, { h: 'Created', f: r => esc(fmtTime(r.created)) }, { h: 'Kind', f: r => esc(r.kind) },
+      { h: 'Size', f: r => esc(fmtBytes(r.size_bytes)), cls: 'num' }, { h: 'Allocated', f: r => esc(fmtBytes(r.allocated_bytes)), cls: 'num' },
+      { h: '', f: r => (can('restore') ? `<button class="btn sm" data-a="restore" data-id="${r.id}">Restore…</button> ` : '') + (can('operator') ? `<button class="btn sm danger" data-a="del" data-id="${r.id}">Delete</button>` : '') },
+    ], v.restore_points, 'No restore points yet.');
+    renderTable(document.getElementById('runs'), [
+      { h: 'Started', f: r => esc(fmtTime(r.started)) }, { h: 'Duration', f: r => esc(dur(r.started, r.finished)) }, { h: 'Kind', f: r => esc(r.kind || '') },
+      { h: 'Transport', f: r => esc(r.transport || '') }, { h: 'Read', f: r => esc(fmtBytes(r.bytes_read)), cls: 'num' },
+      { h: 'Status', f: r => stateBadge(r.status) + (r.error ? ` <span class="muted">${esc(r.error.slice(0, 80))}</span>` : '') },
+      { h: '', f: r => r.task_id ? `<a href="/tasks/${r.task_id}">log</a>` : '' },
+    ], v.runs, 'No runs yet.');
+    return true;
+  }
+  pollWhile(load, 10000);
+  document.getElementById('rps').addEventListener('click', e => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const rp = v.restore_points.find(r => String(r.id) === b.dataset.id);
+    if (b.dataset.a === 'restore') restoreDialog(rp, v.name, v.connection_id);
+    if (b.dataset.a === 'del') confirmModal('Delete restore point', `Delete restore point ${rp.id}? If it is the newest, the next backup is a full.`, async () => { await api('DELETE', `/api/v1/restore-points/${rp.id}`); load(); }, 'danger');
+  });
+});
+</script>
+{% endblock %}

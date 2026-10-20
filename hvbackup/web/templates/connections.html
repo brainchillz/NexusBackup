@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="toolbar"><span class="muted">vCenter servers and standalone ESXi hosts this server backs up from.</span><span class="spacer"></span><button class="btn primary" id="add" hidden>Add connection</button></div>
+<div class="toolbar"><span class="muted">vCenter servers, standalone ESXi hosts and Proxmox VE clusters this server backs up from.</span><span class="spacer"></span><button class="btn primary" id="add" hidden>Add connection</button></div>
 <div class="card"><div id="list"></div></div>
 {% endblock %}
 {% block script %}
@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
       { h: 'Proxies', f: c => c.proxies_online ? badge(c.proxies_online + ' online', 'ok') : badge('none', 'warn') },
       { h: 'Inventory', f: c => c.last_error ? badge('error', 'bad') + ` <span class="muted" title="${esc(c.last_error)}">${esc(c.last_error.slice(0, 50))}</span>` : titleTime(c.last_inventory) },
       { h: '', f: c => (can('operator') ? `<button class="btn sm" data-a="refresh" data-id="${c.id}">Refresh</button> ` : '') +
+          (can('admin') && c.type === 'proxmox' ? `<button class="btn sm" data-a="pve" data-id="${c.id}" data-name="${esc(c.name)}">Proxmox nodes</button> ` : '') +
           (can('admin') ? `<button class="btn sm" data-a="test" data-id="${c.id}">Test</button> <button class="btn sm" data-a="edit" data-id="${c.id}">Edit</button> <button class="btn sm danger" data-a="del" data-id="${c.id}" data-name="${esc(c.name)}">Delete</button>` : '') },
     ], rows, 'No connections yet.');
     return true;
@@ -27,13 +28,13 @@ document.addEventListener('DOMContentLoaded', () => {
   function form(c) {
     c = c || { type: 'vcenter', name: '', host: '', username: 'administrator@vsphere.local', verify_ssl: false };
     return `<div class="row">
-      <label class="f"><span>Type</span><select name="type" ${c.id ? 'disabled' : ''}><option value="vcenter" ${c.type === 'vcenter' ? 'selected' : ''}>vCenter</option><option value="esxi" ${c.type === 'esxi' ? 'selected' : ''}>Standalone ESXi</option><option value="proxmox" ${c.type === 'proxmox' ? 'selected' : ''}>Proxmox VE (later phase)</option></select></label>
+      <label class="f"><span>Type</span><select name="type" ${c.id ? 'disabled' : ''}><option value="vcenter" ${c.type === 'vcenter' ? 'selected' : ''}>vCenter</option><option value="esxi" ${c.type === 'esxi' ? 'selected' : ''}>Standalone ESXi</option><option value="proxmox" ${c.type === 'proxmox' ? 'selected' : ''}>Proxmox VE</option></select></label>
       <label class="f"><span>Name</span><input name="name" value="${esc(c.name)}" placeholder="lab-vcenter"></label></div>
-      <label class="f"><span>Host or address</span><input name="host" value="${esc(c.host)}" placeholder="vcenter.example.net"></label>
+      <label class="f"><span>Host or address (Proxmox: a node or the cluster address, port 8006 unless given)</span><input name="host" value="${esc(c.host)}" placeholder="vcenter.example.net"></label>
       <div class="row"><label class="f"><span>Username</span><input name="username" value="${esc(c.username)}"></label>
       <label class="f"><span>Password${c.id ? ' (leave blank to keep)' : ''}</span><input name="password" type="password" autocomplete="new-password"></label></div>
       <label class="c"><input type="checkbox" name="verify_ssl" ${c.verify_ssl ? 'checked' : ''}> Verify the TLS certificate</label>
-      <p class="muted">Use a dedicated service account with a role limited to backup privileges. The password is encrypted at rest.</p>`;
+      <p class="muted">Use a dedicated service account with a role limited to backup privileges. The password is encrypted at rest. Proxmox: <span class="mono">user@realm</span> with a password, or an API token as <span class="mono">user@realm!tokenid</span> with the secret as password; after adding, open <b>Proxmox nodes</b> to install the node plug-in and register the storage.</p>`;
   }
   document.getElementById('add').onclick = () => modal({ title: 'Add connection', body: form(), buttons: [{ label: 'Cancel' }, { label: 'Add', cls: 'primary', onClick: async m => {
     const res = await api('POST', '/api/v1/connections', { type: val(m, 'type'), name: val(m, 'name'), host: val(m, 'host'), username: val(m, 'username'), password: val(m, 'password'), verify_ssl: val(m, 'verify_ssl') });
@@ -45,6 +46,22 @@ document.addEventListener('DOMContentLoaded', () => {
     if (b.dataset.a === 'refresh') { startedTask(await api('POST', `/api/v1/connections/${id}/refresh`), 'Inventory refresh started'); }
     if (b.dataset.a === 'test') { b.disabled = true; try { const r = await api('POST', `/api/v1/connections/${id}/test`); toast(`OK: ${r.name} (API ${r.version})`); } catch (err) { toast('Failed: ' + err.message, 6000); } b.disabled = false; }
     if (b.dataset.a === 'del') confirmModal('Delete connection', `Delete "${b.dataset.name}"? Its VMs, jobs and restore points in the catalog go with it.`, async () => { await api('DELETE', `/api/v1/connections/${id}`); load(); }, 'danger');
+    if (b.dataset.a === 'pve') {
+      let st = null, err = '';
+      try { st = await api('GET', `/api/v1/connections/${id}/pve-setup`); } catch (e2) { err = e2.message; }
+      const m = modal({ title: `Proxmox nodes of ${b.dataset.name}`, sticky: true, body: err ? `<p class="err">${esc(err)}</p>` : `
+        <p><b>1. Install the node plug-in</b> on every node of the cluster (${st.nodes.map(n => `<span class="mono">${esc(n)}</span>`).join(', ')}), as root:</p>
+        ${st.install ? `<code class="box" id="pveinstall">${esc(st.install)}</code>` : '<p class="err">HVB_URL is not set in hvbackup.conf; the nodes need a routable address for this server.</p>'}
+        <p class="muted">It installs the storage plug-in and backup provider, a Python helper with its own venv under <span class="mono">/opt/hvbackup</span>, and <span class="mono">libnbd-bin</span>, then restarts the PVE daemons. Rerun it to upgrade.</p>
+        <p><b>2. Register the storage.</b> Creates (or re-keys) a storage of type <span class="mono">hvbackup</span> on the cluster carrying a token for this server. ${st.storage ? `Currently registered as <span class="mono">${esc(st.storage)}</span>.` : 'Not registered yet.'}</p>
+        <label class="f"><span>Storage ID</span><input name="storage_id" value="${esc(st.storage || 'hvbackup')}"></label>
+        <p class="muted">Backups of this cluster then run through Proxmox's own backup jobs against that storage, whether started here or from the Proxmox UI, and its restore points appear in the Proxmox UI under the storage's Backups.</p>`,
+        buttons: err ? [{ label: 'Close' }] : [{ label: 'Copy install command', onClick: async () => { await navigator.clipboard.writeText(st.install || ''); toast('Copied'); return false; } },
+          { label: 'Register storage', cls: 'primary', onClick: async m2 => {
+            const r = await api('POST', `/api/v1/connections/${id}/pve-storage`, { storage_id: val(m2, 'storage_id') });
+            toast(`Storage ${r.storage} ${r.state}`); load();
+          } }, { label: 'Close' }] });
+    }
     if (b.dataset.a === 'edit') {
       const c = (await api('GET', '/api/v1/connections')).find(x => String(x.id) === id);
       modal({ title: 'Edit connection', body: form(c), buttons: [{ label: 'Cancel' }, { label: 'Save', cls: 'primary', onClick: async m => {

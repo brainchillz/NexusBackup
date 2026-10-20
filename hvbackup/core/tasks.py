@@ -55,6 +55,41 @@ class Cancelled(Exception):
     pass
 
 
+class NullTask:
+    """Stand-in where a Task is expected but nothing should be recorded."""
+    id = None
+
+    def log(self, msg):
+        log.info('%s', msg)
+
+    def progress(self, frac, message=None):
+        pass
+
+    def cancelled(self):
+        return False
+
+    def check_cancel(self):
+        pass
+
+
+def create_external(kind, subject=None, created_by=None, **params):
+    """A task row for work that runs elsewhere (a Proxmox node) and reports in through the
+    API: no thread here, the reporter finishes it with finish_external()."""
+    with db.conn() as c:
+        c.execute('INSERT INTO tasks(kind,subject,state,created,started,created_by,result_json) VALUES(?,?,?,?,?,?,?)',
+                  (kind, subject, 'running', time.time(), time.time(), created_by, json.dumps({'params': params})))
+        task_id = c.execute('SELECT last_insert_rowid()').fetchone()[0]
+    return Task(task_id)
+
+
+def finish_external(task_id, state, error=None, result=None):
+    with db.conn() as c:
+        row = c.execute('SELECT result_json FROM tasks WHERE id=?', (task_id,)).fetchone()
+        params = (json.loads(row[0]) if row and row[0] else {}).get('params', {})
+        c.execute('UPDATE tasks SET state=?, finished=?, message=COALESCE(?,message), result_json=?, progress=CASE WHEN ?="done" THEN 1 ELSE progress END WHERE id=?',
+                  (state, time.time(), error, json.dumps({'params': params, 'result': result}, default=str), state, task_id))
+
+
 def register(kind, fn):
     _registry[kind] = fn
 

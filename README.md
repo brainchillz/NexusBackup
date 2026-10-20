@@ -27,6 +27,7 @@ Design and test results: [PLAN.md](PLAN.md).
 |---|---|
 | Backup server | Linux, Python 3.12 or newer with `python3-venv`, systemd for the native install or Docker for the container. Any filesystem for the repository (ZFS or btrfs recommended). Network reach to vCenter and every ESXi host on TCP 443. Proxies and browsers reach the server on TCP 8460. |
 | Proxy VM (one per vSphere cluster or standalone host) | A small Linux VM on that vSphere with access to the datastores of the VMs it backs up. 2 vCPU, 2 GB RAM, Python 3.12+, a SCSI controller (ParaVirtual or LSI Logic). The agent runs as root (SCSI rescans and raw disk reads). It holds no vSphere credentials. |
+| Proxmox VE | PVE 9 (backup-provider API). On every node: the plug-in from the server's installer, which adds `libnbd-bin` and a Python venv. Nodes reach the server on TCP 8460. |
 | vSphere | vCenter or ESXi 7.0 U3 or newer. A **paid or evaluation licence**: the free ESXi licence makes the API read-only, so snapshots fail. VMs you back up must not already carry snapshots named `hvbackup`. |
 
 The vCenter account you connect with needs these privileges on the relevant objects:
@@ -193,6 +194,7 @@ before the subcommand for raw output.
 |---|---|---|
 | `status [--tsv]` | One-line summary; `--tsv` is for dashboards | `hvbackup status --tsv` |
 | `connections list\|add\|test\|refresh\|delete` | Manage hypervisor connections | `hvbackup connections add --type vcenter --name lab --host 192.168.35.10 --username administrator@vsphere.local` |
+| `connections pve-setup\|pve-storage <c>` | Proxmox: node installer one-liner; register or re-key the `hvbackup` storage | `hvbackup connections pve-storage lab-pve` |
 | `connections placement <id\|name>` | Hosts, datastores (with free space) and networks a restore can land on | `hvbackup connections placement dr-site` |
 | `vms list [--connection N]` | Inventory with protection status | `hvbackup vms list` |
 | `backup <vm> [--wait] [--no-quiesce]` | Back up one VM now (name or id) | `hvbackup backup web01 --wait` |
@@ -370,6 +372,63 @@ HVB_VSPHERE_USER_MAP=administrator@vsphere.local=admin,ops@corp.example=operator
 The plug-in pages talk to hvbackup through vCenter's reverse proxy, so the
 browser needs no direct route to the backup server; vCenter does.
 
+## Proxmox VE
+
+Proxmox VE 9 clusters are backed up through Proxmox's own backup machinery: the
+server registers itself on the cluster as a storage of type `hvbackup` (the PVE 9
+external backup-provider API), and every backup, whether started here or from the
+Proxmox UI, is a Proxmox backup job writing into this repository. Restores run the
+same way round, from this UI or from the Proxmox UI (Storage → Backups → Restore).
+
+Setup, once per cluster:
+
+1. **Connections → Add**, type Proxmox VE, host (a node or the cluster address,
+   port 8006 unless given), `user@realm` and password, or an API token as
+   `user@realm!tokenid` with the secret as password. The inventory lists VMs and
+   containers; templates are flagged.
+2. **Connections → Proxmox nodes** shows a one-line installer to run as root on
+   every node: `curl -ksS https://<server>:8460/api/v1/pve/install.sh | bash`.
+   It installs the storage plug-in and backup provider (Perl, thin), a Python
+   helper with its own venv under `/opt/hvbackup`, and `libnbd-bin`, then
+   restarts the PVE daemons. Rerun it to upgrade. Nothing on the node holds
+   hypervisor credentials; the server talks to the PVE API with the connection's
+   account.
+3. **Register storage** in the same dialog (CLI: `hvbackup connections
+   pve-storage <c>`). The server creates the `hvbackup` storage on the cluster
+   with a token tied to this connection and pins its own certificate fingerprint.
+   Re-run to rotate the token.
+
+How a VM backup runs: the server asks the guest's node to run `vzdump` against
+that storage with fleecing enabled (required by the provider API; the fleecing
+image goes on the guest's own storage). Proxmox freezes the guest through its
+agent, exposes a snapshot access per disk with a dirty bitmap, and hands it to the
+node plug-in, which reads only the dirty regions (all of the disk on the first
+run), hashes 4 MiB chunks and uploads those the repository lacks. The server
+merges the result with the previous restore point's index, so the catalog holds a
+complete index per restore point exactly like VMware ones; the bitmap is reused
+when the previous restore point still exists. Containers are streamed as a tar of
+the snapshot (mechanism `directory` on the node, `tar` on restore).
+
+Restores: from here, **Restore** on a Proxmox restore point picks a node, storage
+and bridge mapping and gets a free VM ID (the name is set afterwards); from the
+Proxmox UI, pick the archive under the storage's Backups. Either way the node
+plug-in serves each disk from the repository over NBD through `nbdfuse` and
+`qemu-img` writes it to the chosen storage; containers are fetched as a tar under
+`/var/tmp/hvbackup` first (needs that much free space on the node). Deleting an
+archive in the Proxmox UI deletes the restore point here; retention set on jobs
+here and `prune-backups` on the storage both work.
+
+Backup jobs created in the Proxmox UI targeting the `hvbackup` storage must have
+**fleecing enabled** (Advanced). Not yet: restoring a VMware restore point onto
+Proxmox or the reverse (that is conversion, Phase 5), and privileged containers
+are restored unprivileged, as the provider API requires.
+
+Proven in the lab on 2026-10-20 (PVE 9.2.11, two nodes): running VM full 20 GiB
+in 17 s, incremental with bitmap 148 MiB in 1 s, container 610 MiB in 5 s, VM
+and container restores from the Proxmox API in 16 s and 8 s with matching
+checksums, server-side restore with rename and power-on, a vzdump started on the
+node landing in this catalog, and an archive deleted from the Proxmox side.
+
 ## Nexus Dashboard plug-ins
 
 Two plug-ins for [Nexus Dashboard](../NexusDashboard) 3.x ship in
@@ -397,6 +456,8 @@ both.
 | Proxy shows offline | Agent not running, wrong URL or token, or it cannot reach port 8460 | On the proxy: `systemctl status hvbackup-agent`, `journalctl -u hvbackup-agent`. Check `/etc/hvbackup/agent.conf`. |
 | Proxy deployment waits and then fails with `the agent has not reported in` | The VM booted but cloud-init could not install the agent: no DHCP lease, no route to apt/PyPI, or the server URL is not reachable from that network | Open the VM console; read `/var/log/hvbackup-bootstrap.log` and `/var/log/cloud-init-output.log`. Fix and run `bash /opt/hvbackup/bootstrap.sh`, or delete the VM and the proxy record and deploy again. |
 | `… is a template: vSphere cannot snapshot templates` | Back up now or a job hit a VM template | Convert the template to a VM, or clone it and back up the clone. Templates are not included in the plug-in VM lists. |
+| Proxmox: `cannot setup backup access without fleecing` | A backup job made in the Proxmox UI targets the hvbackup storage without fleecing | Edit the job, Advanced → enable fleecing. Jobs started from this server set it automatically. |
+| Proxmox: `vzdump reported success but the node plug-in never completed` | The node could not reach the server or the storage token is stale | On the node: `journalctl -u pvedaemon`; re-run the installer and **Register storage** (rotates the token). |
 | `VM is powered on and no proxy is available on this connection` | No online proxy is tied to that connection | Bring a proxy online; make sure it is a VM on that vSphere. Run **Connections → Refresh** so the server matches it by BIOS UUID, or set its connection when creating it. |
 | `range read ... HTTP 500 (a running VM holds the lock; use a proxy)` | The HTTPS path was used on a running VM | Same as above: this path only works for powered-off VMs. |
 | Task log says consolidation needed or pending | ESXi has not merged the snapshot delta yet | Wait, or consolidate in vCenter (VM → Snapshots → Consolidate). The next run tolerates it. |
@@ -424,14 +485,15 @@ The catalog schema is created and extended automatically on start.
 
 ## Status and roadmap
 
-Working in this release: vCenter and standalone ESXi; full and incremental
+Working in this release: vCenter, standalone ESXi and Proxmox VE 9 (VMs with
+dirty-bitmap incrementals, containers); full and incremental
 backups of running and powered-off VMs; restore as new VM, onto the source or
 any other connection (DR); OVF/OVA export; jobs, schedules, retention, GC; web
 UI, CLI, REST API with OpenAPI; vSphere Client plug-in; Nexus Dashboard
 plug-ins (declarative and Python tiers); native, deb and Docker installs.
 
-Planned: Proxmox VE provider (PVE 9 backup-provider API), cross-platform
-conversion (VMware ↔ Proxmox with guest driver fix-ups), Nexus SSO and OpenID
+Planned: cross-platform conversion (VMware ↔ Proxmox with guest driver
+fix-ups), Nexus SSO and OpenID
 Connect logins, encryption at rest, file-level restore. The design and the
 Phase 0 measurements are in [PLAN.md](PLAN.md).
 

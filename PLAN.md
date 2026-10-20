@@ -6,8 +6,9 @@ Working name: pending (referred to as "the server" below)
 ## 0. Status and next steps (2026-10-20)
 
 Done: Phase 0 (spike), Phase 1 (hvbackup 0.1.0 installed on serenity, nightly
-job on two test VMs), Phase 2 (vCenter plug-in, two visual checks open), Phase
-2b both tiers (dashboard plug-in), OVA export, restore to a different target.
+job on two test VMs), Phase 2 (vCenter plug-in, visually checked), Phase 2b
+both tiers (dashboard plug-in), OVA export, restore to a different target,
+direct-ESXi backups, proxy deployment from the UI, Phase 3 (Proxmox).
 Full detail per phase in §8.
 
 Next, in order:
@@ -103,9 +104,38 @@ Next, in order:
    created the VM, and the Recent Tasks pane showed "hvbackup restore" with
    initiator hvbackup; the Tasks view lists "hvbackup backup" for the runs).
    Nothing open. Scratch driver: scratchpad `vsc/check.py`.
-3. **Phase 3, Proxmox provider.** PVE 9 backup-provider shim into the same
-   ingest endpoint, restore to Proxmox, containers as file trees. Makes the
-   catalog cross-platform, which conversion depends on.
+3. **Phase 3, Proxmox provider** (built 2026-10-20). Connection type
+   `proxmox` (PVE API, password or API token); inventory of VMs and
+   containers into the neutral spec; node plug-in = storage plug-in
+   `PVE::Storage::Custom::HvbackupPlugin` (type `hvbackup`, feature
+   backup-provider, token in /etc/pve/priv like PBS, cert fingerprint pinned)
+   + provider `PVE::BackupProvider::Plugin::Hvbackup` + Python helper
+   `/opt/hvbackup/pve_helper.py` (venv: blake3, zstandard, requests), all
+   served by the server (`/api/v1/pve/install.sh`, one-liner per node).
+   Backups are Proxmox backup jobs: the server calls vzdump with fleecing on
+   the guest's storage; the provider uses the file-handle mechanism (nbdfuse)
+   and hands dirty regions to the helper, which reads with O_DIRECT through a
+   page-aligned buffer, hashes, asks `/agent/have`, uploads zstd chunks;
+   the server merges with the previous index (`/api/v1/pve/backup/*`), so
+   every restore point has a complete index like VMware ones; partially
+   dirty chunks are composed from the previous chunk. Containers: tar of the
+   snapshot dir streamed through the same pipeline (unprivileged half gets
+   its credentials from a prepare-time file and a cached env). Restores:
+   `restore_vm_volume_init` starts a Python NBD server (read-only, newstyle,
+   prefetching) exposed as a file via nbdfuse for qemu-img; containers as a
+   tar fetched to /var/tmp. Archives = catalog (`backup/vm|ct/<vmid>/<run>`),
+   so the Proxmox UI lists, restores and deletes them; PVE-started jobs land
+   as external tasks. Server-side restore picks node/storage/bridges with the
+   same picker. Proven on the lab cluster (minirack, PVE 9.2.11): full 20 GiB
+   in 17 s, bitmap incremental 148 MiB in 1 s, CT 610 MiB in 5 s, restores
+   from the PVE API (VM 16 s, CT 8 s, checksums match), server-side restore
+   with rename + power-on, vzdump from the node into the catalog, delete from
+   the PVE side. Lessons: vzdump runs with Perl taint mode (untaint exec args
+   and env); zstd contexts are not thread-safe; qemu-server stats the restore
+   source so an NBD URI alone is not enough; fleecing is mandatory and needs
+   an explicit storage; row_to_dict parses *_json columns into bare names.
+   Not yet: cross-platform restore (Phase 5), privileged CT restore (API
+   limit), file-tree dedup for containers (tar stream now).
 4. **Phase 4, SSO.** Nexus assertion, generic OIDC, vCenter and Proxmox
    session mapping. Waits for both plug-ins so all four doors are tested
    together.
@@ -113,8 +143,8 @@ Next, in order:
    fixup module for the reverse, KVM test boot on serenity (needs the
    libguestfs tool set installed there).
 
-Open decisions for the owner: which real VMs join the nightly job during the
-soak. Proxmox (3) is next.
+Open decisions for the owner: which real VMs join the nightly jobs during the
+soak (vSphere and Proxmox). SSO (4) is next, then conversion (5).
 
 Where things are written down: this file (design and status), `README.md`
 (install and use), `../OTNOPS-Infra/hosts/testserver.md` (serenity install,
@@ -569,11 +599,12 @@ met on serenity: protection status, alerts and Back up now from a dashboard
 node (verified through the dashboard API with an operator token; history
 sampler recorded `hvb_repo_used`).
 
-### Phase 3 — Proxmox provider
-Ingest endpoint, PVE 9 backup provider shim, restore to Proxmox, container
-backups as file trees.
-Exit criteria: incremental backups of running Proxmox VMs appearing in both
-catalogs, restore from the Proxmox UI.
+### Phase 3 — Proxmox provider (built 2026-10-20)
+Ingest endpoints, PVE 9 backup-provider plug-in + helper, restore to Proxmox
+from both sides, containers as a tar stream. Exit criteria met: bitmap
+incrementals of a running VM appear in both the catalog and the Proxmox
+storage listing; restores from the Proxmox API and from this server. Detail
+in §0 item 3.
 
 ### Phase 4 — SSO
 Nexus assertion relying party, generic OIDC, vCenter and Proxmox session

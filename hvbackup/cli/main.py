@@ -15,6 +15,7 @@ Client side (any machine; HVB_URL + HVB_TOKEN, or ~/.config/hvbackup/client.conf
   hvbackup restore-points list [--vm <vm>]
   hvbackup restore <rp> --name NAME [--connection C] [--host H] [--datastore DS] [--network SRC=DST]... [--power-on] [--keep-identity] [--wait]
   hvbackup connections placement <id|name>      hosts, datastores and networks to restore onto
+  hvbackup connections pve-setup|pve-storage <id|name>   Proxmox: node installer one-liner; register the hvbackup storage
   hvbackup tasks list|show|wait|cancel
   hvbackup proxies list|add <name>|deploy <name> --connection <id|name> [...]|image
   hvbackup users list|add|passwd ; hvbackup tokens list|add|delete
@@ -207,6 +208,18 @@ def cmd_connections(args):
         out(args, res) if args.json else wait_task(c, res['task_id'])
     elif args.action == 'delete':
         out(args, c.call('DELETE', f'/connections/{args.id}'))
+    elif args.action == 'pve-setup':
+        st = c.call('GET', f'/connections/{resolve_connection(c, args.id)}/pve-setup')
+        if args.json:
+            out(args, st)
+            return
+        print(f'nodes: {", ".join(st["nodes"])}')
+        print(f'storage: {st["storage"] or "not registered"}')
+        print('install on every node, as root:')
+        print(f'  {st["install"] or "(set HVB_URL in hvbackup.conf first)"}')
+        print(f'then: hvbackup connections pve-storage {args.id}')
+    elif args.action == 'pve-storage':
+        out(args, c.call('POST', f'/connections/{resolve_connection(c, args.id)}/pve-storage', json={'storage_id': args.storage_id or 'hvbackup'}))
     elif args.action == 'placement':
         p = c.call('GET', f'/connections/{resolve_connection(c, args.id)}/placement')
         if args.json:
@@ -433,7 +446,7 @@ def main(argv=None):
     sub.add_parser('agent', help='run the proxy agent').set_defaults(fn=cmd_agent)
 
     p = sub.add_parser('status'); p.add_argument('--tsv', action='store_true'); p.set_defaults(fn=cmd_status)
-    p = sub.add_parser('connections'); p.add_argument('action', choices=['list', 'add', 'test', 'refresh', 'delete', 'placement']); p.add_argument('id', nargs='?')
+    p = sub.add_parser('connections'); p.add_argument('action', choices=['list', 'add', 'test', 'refresh', 'delete', 'placement', 'pve-setup', 'pve-storage']); p.add_argument('id', nargs='?'); p.add_argument('--storage-id')
     p.add_argument('--type', choices=['vcenter', 'esxi', 'proxmox'], default='vcenter'); p.add_argument('--name'); p.add_argument('--host'); p.add_argument('--username'); p.add_argument('--password'); p.add_argument('--verify-ssl', action='store_true'); p.set_defaults(fn=cmd_connections)
     p = sub.add_parser('vms'); p.add_argument('action', choices=['list'], nargs='?', default='list'); p.add_argument('--connection', type=int); p.set_defaults(fn=cmd_vms)
     p = sub.add_parser('backup'); p.add_argument('vm'); p.add_argument('--wait', action='store_true'); p.add_argument('--no-quiesce', action='store_true'); p.set_defaults(fn=cmd_backup)

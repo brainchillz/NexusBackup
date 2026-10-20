@@ -67,6 +67,15 @@ async def have(work_id: int, request: Request, proxy=Depends(current_proxy)):
     return {'missing': missing}
 
 
+@r.post('/have')
+async def have_any(request: Request, proxy=Depends(current_proxy)):
+    """Which of these chunk hashes are missing (no work item needed; used by the Proxmox node plug-in)."""
+    body = await request.json()
+    rep = repo()
+    missing = [h for h in body.get('hashes', []) if len(h) == 64 and not rep.has(bytes.fromhex(h))]
+    return {'missing': missing}
+
+
 @r.put('/chunks/{hex_hash}')
 async def put_chunk(hex_hash: str, request: Request, proxy=Depends(current_proxy)):
     if len(hex_hash) != 64:

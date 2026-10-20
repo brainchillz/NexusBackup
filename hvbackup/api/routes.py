@@ -162,8 +162,6 @@ def connections(user=Depends(current_user)):
 
 @r.post('/connections', status_code=201)
 def add_connection(body: ConnectionIn, user=Depends(require('admin'))):
-    if body.type == 'proxmox':
-        raise HTTPException(400, 'Proxmox provider arrives in a later phase')
     with db.conn() as c:
         try:
             c.execute('INSERT INTO connections(type,name,host,username,secret_enc,verify_ssl,created) VALUES(?,?,?,?,?,?,?)',
@@ -244,6 +242,37 @@ def placement(cid: int, user=Depends(current_user)):
         return ops.placement(ops.connection(cid))
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f'{type(e).__name__}: {e}')
+
+
+@r.get('/connections/{cid}/pve-setup')
+def pve_setup(cid: int, user=Depends(require('admin'))):
+    """Proxmox only: the node installer one-liner and whether the hvbackup storage is registered."""
+    cr = ops.connection(cid)
+    if cr['type'] != 'proxmox':
+        raise HTTPException(400, 'not a Proxmox connection')
+    try:
+        return ops.pve_setup(cr)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f'{type(e).__name__}: {e}')
+
+
+class PveStorageIn(BaseModel):
+    storage_id: str = Field(default='hvbackup', pattern=r'^[a-zA-Z][a-zA-Z0-9\-_.]{1,31}$')
+
+
+@r.post('/connections/{cid}/pve-storage')
+def pve_storage(cid: int, body: PveStorageIn = PveStorageIn(), user=Depends(require('admin'))):
+    """Proxmox only: register the hvbackup storage on the cluster (after the node plug-in is
+    installed on every node), minting the token the nodes use. Re-run to rotate the token."""
+    cr = ops.connection(cid)
+    if cr['type'] != 'proxmox':
+        raise HTTPException(400, 'not a Proxmox connection')
+    try:
+        res = ops.pve_register_storage(cr, body.storage_id)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f'{type(e).__name__}: {e}')
+    db.audit(user['username'], 'pve_storage', f'{cr["name"]}: {body.storage_id} {res["state"]}')
+    return res
 
 
 @r.post('/connections/{cid}/refresh')

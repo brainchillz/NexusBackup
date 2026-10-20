@@ -5,7 +5,7 @@ import logging
 import time
 
 from .. import db
-from ..providers import vmware
+from ..providers import proxmox, vmware
 from ..store.chunks import repo
 from . import scheduler, secrets, tasks, uuids
 
@@ -24,7 +24,54 @@ def connection(conn_id):
 def open_api(conn_row):
     if conn_row['type'] in ('vcenter', 'esxi'):
         return vmware.VMware(conn_row['host'], conn_row['username'], secrets.decrypt(conn_row['secret_enc']), bool(conn_row['verify_ssl']))
+    if conn_row['type'] == 'proxmox':
+        return proxmox.Proxmox(conn_row['host'], conn_row['username'], secrets.decrypt(conn_row['secret_enc']), bool(conn_row['verify_ssl']))
     raise RuntimeError(f'provider {conn_row["type"]} not implemented yet')
+
+
+def pve_setup(conn_row):
+    """What an admin needs to connect a Proxmox cluster: the one-line node installer and the
+    storage registration state."""
+    from .. import config
+    base = (config.PUBLIC_URL or '').rstrip('/')
+    with open_api(conn_row) as api:
+        about = api.about()
+    return {'install': f'curl -ksS {base}/api/v1/pve/install.sh | bash' if base else None,
+            'public_url': base or None, 'nodes': about.get('nodes', []), 'storage': about.get('pve_storage'),
+            'storages': about.get('pve_storages', [])}
+
+
+def pve_register_storage(conn_row, storage_id='hvbackup'):
+    """Register (or re-key) the hvbackup storage on the cluster. The storage entry carries a
+    proxy token tied to this connection; every node's plug-in uses it."""
+    from .. import config
+    from . import auth, tls
+    import hashlib
+    import urllib.parse
+    if not config.PUBLIC_URL:
+        raise RuntimeError('HVB_URL must be set to the public https URL of this server first')
+    u = urllib.parse.urlparse(config.PUBLIC_URL)
+    name = f'pve-{conn_row["name"]}'
+    with db.conn() as c:
+        old = c.execute('SELECT id FROM proxies WHERE name=?', (name,)).fetchone()
+        if old:
+            c.execute('DELETE FROM proxies WHERE id=?', (old[0],))
+    pid, token = auth.create_proxy(name, conn_row['id'])
+    fingerprint = None
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives.serialization import Encoding
+        crt, _ = tls.ensure_cert()
+        der = x509.load_pem_x509_certificate(open(crt, 'rb').read()).public_bytes(Encoding.DER)
+        fingerprint = ':'.join(f'{b:02X}' for b in hashlib.sha256(der).digest())
+    except Exception as e:  # noqa: BLE001
+        log.warning('cannot compute the server certificate fingerprint: %s', e)
+    with open_api(conn_row) as api:
+        state = api.storage_register(storage_id, u.hostname, u.port or 8460, token, fingerprint)
+        about = api.about()
+    with db.conn() as c:
+        c.execute('UPDATE connections SET info_json=? WHERE id=?', (json.dumps(about), conn_row['id']))
+    return {'storage': storage_id, 'state': state, 'proxy_id': pid, 'fingerprint': fingerprint}
 
 
 def test_connection(conn_row):
@@ -193,7 +240,10 @@ def _backup_one(task, api, cr, vm_row, job):
                         c.execute('UPDATE proxies SET connection_id=? WHERE id=?', (cr['id'], p['id']))
                     proxy = p
                     break
-        rp_id, stats = vmware.backup_vm(task, api, vm_row, run_id, proxy, quiesce=bool(job.get('quiesce', 1)))
+        if cr['type'] == 'proxmox':
+            rp_id, stats = proxmox.backup_vm(task, api, cr, vm_row, run_id, quiesce=bool(job.get('quiesce', 1)))
+        else:
+            rp_id, stats = vmware.backup_vm(task, api, vm_row, run_id, proxy, quiesce=bool(job.get('quiesce', 1)))
         with db.conn() as c:
             c.execute('UPDATE runs SET finished=?, status=?, kind=?, transport=?, bytes_read=?, bytes_stored=?, restore_point_id=? WHERE id=?',
                       (time.time(), 'done', stats['kind'], stats['transport'], stats['bytes_read'], stats.get('bytes_stored', 0), rp_id, run_id))
@@ -210,10 +260,11 @@ def _backup_one(task, api, cr, vm_row, job):
         vct = getattr(task, 'vc_task', None)
         if vct is not None:
             vct.failed(f'{type(e).__name__}: {e}')
-        try:
-            vmware.vsp.post_event(api, api.vm_by_moref(vm_row['moref']), vmware.vsp.EVENT_FAILED, f'hvbackup backup of {vm_row["name"]} failed: {type(e).__name__}: {e}')
-        except Exception:  # noqa: BLE001
-            pass
+        if cr['type'] != 'proxmox':
+            try:
+                vmware.vsp.post_event(api, api.vm_by_moref(vm_row['moref']), vmware.vsp.EVENT_FAILED, f'hvbackup backup of {vm_row["name"]} failed: {type(e).__name__}: {e}')
+            except Exception:  # noqa: BLE001
+                pass
         with db.conn() as c:
             c.execute('UPDATE runs SET finished=?, status=?, error=? WHERE id=?', (time.time(), 'failed', f'{type(e).__name__}: {e}'[:1000], run_id))
         return {'vm': vm_row['name'], 'status': 'failed', 'error': str(e)}
@@ -283,13 +334,18 @@ def restore(task, restore_point_id, options):
         vm_row = db.row_to_dict(c.execute('SELECT * FROM vms WHERE id=?', (rp['vm_id'],)).fetchone())
     conn_id = options.get('connection_id') or vm_row['connection_id']
     cr = connection(conn_id)
-    if cr['type'] not in ('vcenter', 'esxi'):
+    if cr['type'] not in ('vcenter', 'esxi', 'proxmox'):
         raise RuntimeError(f'restore to a {cr["type"]} connection is not supported yet')
     # The source connection is never contacted: a restore reads only the repository, so a
     # vCenter that no longer exists is no obstacle to restoring its VMs elsewhere.
     with open_api(cr) as api:
-        proxy = pick_proxy(cr['id'])
         where = cr['name'] if conn_id == vm_row['connection_id'] else f'{cr["name"]} (a different connection than the backup came from)'
+        if cr['type'] == 'proxmox':
+            task.log(f'restore point {rp["id"]} of {vm_row["name"]} -> {where} through the Proxmox restore API')
+            res = proxmox.restore_vm(task, api, cr, rp, options)
+            tasks.create('inventory', subject=cr['name'], created_by='restore', connection_id=cr['id'])
+            return res
+        proxy = pick_proxy(cr['id'])
         task.log(f'restore point {rp["id"]} of {vm_row["name"]} -> {where} via {"proxy " + proxy["name"] if proxy else "HTTPS upload"}')
         try:
             res = vmware.restore_vm(task, api, rp, options, proxy)

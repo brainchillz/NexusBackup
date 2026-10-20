@@ -5,16 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · hvbackup</title>
 <link rel="stylesheet" href="/static/app.css">
+<script>
+(function () { try {
+  var h = document.documentElement;
+  if (localStorage.getItem('theme') === 'light') h.classList.add('theme-light');
+  var t = JSON.parse(localStorage.getItem('hvbTheme.v1') || 'null');
+  if (!t || !/^[a-z][a-z0-9-]{1,31}$/.test(t.id || '')) return;
+  h.setAttribute('data-theme', t.id);
+  if (t.variant && /^[a-z][a-z0-9-]{0,31}$/.test(t.variant)) h.setAttribute('data-theme-variant', t.variant);
+  if (t.modes && t.modes.indexOf('light') < 0) h.classList.remove('theme-light');
+  if (t.modes && t.modes.indexOf('dark') < 0) h.classList.add('theme-light');
+  var l = document.createElement('link'); l.rel = 'stylesheet'; l.id = 'theme-css';
+  l.href = '/themes/' + t.id + '/theme.css' + (t.v ? '?v=' + encodeURIComponent(t.v) : '');
+  document.head.appendChild(l);
+} catch (e) {} })();
+window.USER = { username: '', role: 'viewer' };
+window.THEMES = {{ themes | tojson }};
+</script>
 <script src="/static/app.js" defer></script>
 </head>
-<body>
+<body class="login-page">
 <div class="login">
-  <div class="card">
-    <div class="brand">hvbackup <small>v{{ version }}</small></div>
+  <div class="login-box">
+    <h1>hvbackup</h1>
+    <p class="subtitle"><strong>backup server</strong> · v{{ version }}</p>
     <form id="f">
       <label class="f"><span>Username</span><input name="username" autocomplete="username" autofocus required></label>
       <label class="f"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
-      <div class="err" id="err" style="color:var(--bad);min-height:1.2em"></div>
+      <div class="err" id="err"></div>
       <button class="btn primary" type="submit">Sign in</button>
     </form>
   </div>

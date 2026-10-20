@@ -5,30 +5,80 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ title }} · hvbackup</title>
 <link rel="stylesheet" href="/static/app.css">
-<script>window.USER = {{ user | tojson }};</script>
+<script>
+// Before first paint: dark/light class and the chosen theme (same contract as
+// Nexus Dashboard: html.theme-light, data-theme, data-theme-variant). Only
+// same-origin /themes/<id>/ stylesheets are accepted from the cache.
+(function () { try {
+  var h = document.documentElement;
+  if (localStorage.getItem('theme') === 'light') h.classList.add('theme-light');
+  var t = JSON.parse(localStorage.getItem('hvbTheme.v1') || 'null');
+  if (!t || !/^[a-z][a-z0-9-]{1,31}$/.test(t.id || '')) return;
+  h.setAttribute('data-theme', t.id);
+  if (t.variant && /^[a-z][a-z0-9-]{0,31}$/.test(t.variant)) h.setAttribute('data-theme-variant', t.variant);
+  if (t.modes && t.modes.indexOf('light') < 0) h.classList.remove('theme-light');
+  if (t.modes && t.modes.indexOf('dark') < 0) h.classList.add('theme-light');
+  var l = document.createElement('link'); l.rel = 'stylesheet'; l.id = 'theme-css';
+  l.href = '/themes/' + t.id + '/theme.css' + (t.v ? '?v=' + encodeURIComponent(t.v) : '');
+  document.head.appendChild(l);
+  if (t.js) { var s = document.createElement('script'); s.id = 'theme-js'; s.src = '/themes/' + t.id + '/theme.js' + (t.v ? '?v=' + encodeURIComponent(t.v) : ''); s.defer = true; document.head.appendChild(s); }
+} catch (e) {} })();
+window.USER = {{ user | tojson }};
+window.THEMES = {{ themes | tojson }};
+</script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
-<div class="layout">
-  <aside class="sidebar">
-    <div class="brand">hvbackup <small>v{{ version }}</small></div>
-    <nav class="nav">
-      {% for href, label in nav %}<a href="{{ href }}" class="{% if path == href or (href != '/' and path.startswith(href)) %}active{% endif %}">{{ label }}</a>{% endfor %}
-    </nav>
-  </aside>
-  <div class="main">
-    <header class="topbar">
-      <h1>{{ title }}</h1>
-      <div class="who"><span>{{ user.username }}</span><span class="badge">{{ user.role }}</span><button class="btn sm" id="logout">Sign out</button></div>
-    </header>
-    <main class="content">
-      {% block content %}{% endblock %}
-    </main>
+<nav class="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-brand">
+      <h1>hvbackup</h1>
+      <p class="subtitle"><strong>backup server</strong> · v{{ version }}</p>
+    </div>
   </div>
+  <ul class="nav-list">
+    {% for cat, items in nav %}
+    <li class="nav-cat">{{ cat }}</li>
+    {% for href, label in items %}
+    <li><a href="{{ href }}" class="{% if path == href or (href != '/' and path.startswith(href)) %}active{% endif %}">{{ label }}</a></li>
+    {% endfor %}
+    {% endfor %}
+  </ul>
+  <div class="sidebar-footer">
+    <div class="footer-account">
+      <span class="who-name">{{ user.username }}</span>
+      <span class="badge plain">{{ user.role }}</span>
+      <button class="linkbtn" id="logout">Sign out</button>
+    </div>
+    <div class="appearance" id="appearance">
+      <button class="linkbtn" id="mode-toggle" title="Switch between dark and light">Light mode</button>
+      <select id="theme-pick" title="Theme" hidden></select>
+      <select id="variant-pick" title="Theme variant" hidden></select>
+    </div>
+  </div>
+</nav>
+<div class="main">
+  <div class="machine-strip">
+    <span class="ms-host">{{ title }}</span>
+    <span id="strip-status"></span>
+    <span class="ms-right" id="strip-clock"></span>
+  </div>
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
 </div>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('logout').onclick = async () => { await api('POST', '/api/v1/auth/logout'); location.href = '/login'; };
+  initAppearance();
+  const strip = document.getElementById('strip-status');
+  pollWhile(async () => {
+    try {
+      const s = await api('GET', '/api/v1/status');
+      strip.innerHTML = `<span class="${s.proxies_online ? 'ms-ok' : 'ms-bad'}">${s.proxies_online} prox${s.proxies_online === 1 ? 'y' : 'ies'}</span> · ${s.running_tasks} running · ${s.failed_runs_24h ? '<span class="ms-bad">' + s.failed_runs_24h + ' failed 24h</span>' : '<span class="ms-ok">no failures 24h</span>'} · repo ${esc(fmtBytes(s.repository.free_bytes))} free`;
+    } catch (e) { strip.textContent = ''; }
+    return true;
+  }, 30000);
 });
 </script>
 {% block script %}{% endblock %}

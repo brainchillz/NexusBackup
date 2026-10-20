@@ -66,13 +66,78 @@ function dur(a, b) {
 function titleTime(t) { return `<span title="${esc(fmtTime(t))}">${esc(ago(t))}</span>`; }
 
 function badge(text, cls) { return `<span class="badge ${cls || ''}">${esc(text)}</span>`; }
+
+/* ─── Appearance: dark/light + theme drop-ins (Nexus Dashboard contract) ─── */
+function applyTheme(t) {
+  const h = document.documentElement;
+  document.getElementById('theme-css')?.remove();
+  if (!t) {
+    h.removeAttribute('data-theme'); h.removeAttribute('data-theme-variant');
+    localStorage.removeItem('hvbTheme.v1');
+    if (typeof window.NexusThemes === 'object') for (const k in window.NexusThemes) try { window.NexusThemes[k].unmount?.(); } catch (e) { /* theme bug */ }
+    return;
+  }
+  const variant = t.variant || t.default_variant || (t.variants[0] && t.variants[0].id) || '';
+  h.setAttribute('data-theme', t.id);
+  if (variant) h.setAttribute('data-theme-variant', variant); else h.removeAttribute('data-theme-variant');
+  if (t.modes.indexOf('light') < 0) { h.classList.remove('theme-light'); }
+  if (t.modes.indexOf('dark') < 0) { h.classList.add('theme-light'); }
+  const l = document.createElement('link'); l.rel = 'stylesheet'; l.id = 'theme-css';
+  l.href = `/themes/${t.id}/theme.css?v=${encodeURIComponent(t.v || '0')}`;
+  document.head.appendChild(l);
+  localStorage.setItem('hvbTheme.v1', JSON.stringify({ id: t.id, variant, modes: t.modes, js: !!t.js, v: t.v }));
+  if (t.js && !document.getElementById('theme-js')) {
+    const s = document.createElement('script'); s.id = 'theme-js'; s.src = `/themes/${t.id}/theme.js?v=${encodeURIComponent(t.v || '0')}`;
+    s.onload = () => mountTheme(t.id, variant);
+    document.head.appendChild(s);
+  } else mountTheme(t.id, variant);
+}
+function mountTheme(id, variant) {
+  const th = window.NexusThemes && window.NexusThemes[id];
+  if (!th || !th.mount) return;
+  try { th.mount({ isAuthed: () => !!(USER && USER.username), currentPage: () => location.pathname, variant: () => variant }); } catch (e) { console.warn('theme', e); }
+  document.dispatchEvent(new CustomEvent('nexus:theme', { detail: { id, variant } }));
+}
+function initAppearance() {
+  const h = document.documentElement;
+  const toggle = document.getElementById('mode-toggle');
+  const pick = document.getElementById('theme-pick');
+  const vpick = document.getElementById('variant-pick');
+  if (!toggle) return;
+  const themes = window.THEMES || [];
+  const saved = JSON.parse(localStorage.getItem('hvbTheme.v1') || 'null');
+  const label = () => { toggle.textContent = h.classList.contains('theme-light') ? 'Dark mode' : 'Light mode'; };
+  label();
+  toggle.onclick = () => {
+    h.classList.toggle('theme-light');
+    localStorage.setItem('theme', h.classList.contains('theme-light') ? 'light' : 'dark');
+    label();
+    document.dispatchEvent(new CustomEvent('nexus:mode', { detail: { light: h.classList.contains('theme-light') } }));
+  };
+  if (!themes.length) return;
+  pick.hidden = false;
+  pick.innerHTML = '<option value="">Nexus (default)</option>' + themes.map(t => `<option value="${esc(t.id)}" ${saved && saved.id === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
+  const drawVariants = () => {
+    const t = themes.find(x => x.id === pick.value);
+    vpick.hidden = !(t && t.variants && t.variants.length);
+    if (!vpick.hidden) {
+      const cur = (saved && saved.id === t.id && saved.variant) || t.default_variant || t.variants[0].id;
+      vpick.innerHTML = t.variants.map(v => `<option value="${esc(v.id)}" ${v.id === cur ? 'selected' : ''}>${esc(v.label || v.id)}</option>`).join('');
+      vpick.title = t.variant_label || 'Variant';
+    }
+  };
+  drawVariants();
+  pick.onchange = () => { const t = themes.find(x => x.id === pick.value); drawVariants(); applyTheme(t ? { ...t, variant: vpick.hidden ? '' : vpick.value } : null); };
+  vpick.onchange = () => { const t = themes.find(x => x.id === pick.value); if (t) applyTheme({ ...t, variant: vpick.value }); };
+  if (saved && saved.js) { const t = themes.find(x => x.id === saved.id); if (t) mountTheme(t.id, saved.variant); }
+}
 function stateBadge(s) {
   const m = { done: 'ok', running: 'info', queued: 'info', failed: 'bad', cancelled: 'warn' };
   return badge(s, m[s] || '');
 }
 function powerBadge(p) {
   if (p === 'poweredOn') return badge('on', 'ok');
-  if (p === 'poweredOff') return badge('off', '');
+  if (p === 'poweredOff') return badge('off', 'gray');
   return badge(p || '?', 'warn');
 }
 function progressBar(frac, state) {
@@ -98,7 +163,7 @@ function renderTable(el, columns, rows, emptyText) {
 function modal(o) {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
-  bg.innerHTML = `<div class="modal" role="dialog"><header><span>${esc(o.title)}</span><button class="btn sm" data-x>✕</button></header>
+  bg.innerHTML = `<div class="modal" role="dialog"><header><span>${esc(o.title)}</span><button class="btn sm" data-x aria-label="Close">&times;</button></header>
     <div class="body">${o.body}<div class="err"></div></div><footer></footer></div>`;
   const footer = bg.querySelector('footer');
   const close = () => bg.remove();

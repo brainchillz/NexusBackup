@@ -338,11 +338,12 @@ production storage).
 
 ## 6. Technology choices
 
-- **Core service: Go.** govmomi is the best-maintained vSphere client,
-  concurrency fits parallel disk streaming, Ed25519 verification is in the
-  standard library, and the result is one static binary. Python with pyVmomi
-  is the alternative if suite consistency matters more than throughput;
-  decide at the spike.
+- **Core service: Python** (decided after the spike, 2026-10-20). Throughput
+  lives in the proxy agent and the chunk store, both of which hit 360+ MiB/s
+  in Python with blake3 and zstd doing the work in C; the API layer is not
+  the bottleneck. Python matches the rest of the Nexus suite, pyVmomi is
+  mature, and the Nexus Dashboard Python-tier plug-in shares the language.
+  FastAPI gives the OpenAPI spec for free.
 - **Disk access:** hot-add in the proxy VM, read with pread; datastore
   HTTPS range reads for powered-off VMs so no proxy is needed for them;
   ExportSnapshot as a last-resort full. No VDDK.
@@ -411,23 +412,29 @@ verified over SSH. All exit criteria met. Spike code is Python with pyVmomi; the
 is small enough that the language decision for the core can still go either
 way.
 
-### Phase 1 — Core service
-REST API with OpenAPI spec, catalog, chunk store, repository handling,
-scheduler, tasks, local accounts and tokens, CLI with `--json`, and the web
-UI's inventory, protect, run, schedule and restore pages. Both install
-paths from the start so packaging never becomes a retrofit. VMware provider complete: full and
-incremental backup, full VM restore, CBT reset detection with fallback to
-full. Retention and garbage collection.
-Includes the proxy VM agent and its deployment from the server.
-Exit criteria: nightly job on lab VMs for two weeks with verified restores.
+### Phase 1 — Core service (built 2026-10-20, soak test running)
+Delivered as `hvbackup` 0.1.0: REST API with OpenAPI (`/api/docs`), SQLite
+catalog, content-addressed chunk store with GC, repository on a chosen
+directory, cron scheduler, task runner, local accounts, tokens and four
+roles, CLI with `--json` and `status --tsv`, web UI (13 pages), vSphere
+provider with hot-add via the proxy agent and HTTPS for powered-off VMs,
+restore through the proxy or HTTPS upload, retention, CBT-reset fallback to
+full. Packaging: native `install.sh`, `.deb` built in a container, Docker
+Compose. Installed on serenity as a systemd service with the repository on
+`/volume01/hvbackup` and a nightly job on the lab test VMs.
+Not yet done from the original scope: server-driven deployment of the proxy
+appliance (today: `install.sh --agent` on any small Linux VM).
+Exit criteria still open: two weeks of nightly runs with verified restores.
 
 ### Phase 2 — vCenter plug-in
 Manifest, registration, VM action and views, task mirroring, custom events.
 Exit criteria: backup and restore of a VM driven entirely from the vSphere
 Client.
 
-### Phase 2b — Nexus Dashboard plug-in
-Declarative plug-in first, Python tier once the API is stable.
+### Phase 2b — Nexus Dashboard plug-in (declarative tier shipped)
+`plugins/nexusdash/hvbackup/plugin.yaml`: service card, status table from
+`hvbackup status --tsv`, recent runs, journal, embedded console. Python tier
+(summary, alerts, backup-now actions) still to do.
 Exit criteria: protection status, alerts and backup-now from a dashboard
 node.
 

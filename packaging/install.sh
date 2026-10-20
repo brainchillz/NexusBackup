@@ -22,6 +22,7 @@ install -d -m 750 /etc/hvbackup
 
 if [ "$ROLE" = server ]; then
     id hvbackup >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -d /var/lib/hvbackup hvbackup
+    chgrp hvbackup /etc/hvbackup
     install -d -m 750 -o hvbackup -g hvbackup /var/lib/hvbackup
     if [ ! -f /etc/hvbackup/hvbackup.conf ]; then
         cat > /etc/hvbackup/hvbackup.conf <<'CONF'

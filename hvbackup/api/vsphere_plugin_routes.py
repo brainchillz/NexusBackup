@@ -21,8 +21,8 @@ PAGES = {'global', 'vm-summary', 'vm-monitor', 'backup-now', 'restore'}
 
 def manifest():
     return {
-        'manifestVersion': '1.0.0.0',
-        'requirements': {'plugin.api.version': '1.0.0.0'},
+        'manifestVersion': '1.0.0',
+        'requirements': {'plugin.api.version': '1.0.0'},
         'configuration': {'nameKey': 'plugin.name', 'icon': {'name': 'main'}},
         'global': {'view': {'navigationId': 'hvbackup.home', 'uri': 'global.html', 'navigationVisible': True}},
         'objects': {

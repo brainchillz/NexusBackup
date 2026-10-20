@@ -24,7 +24,8 @@ Next, in order:
    datastores between source and target, handle a powered-off/unreachable
    source vCenter gracefully, and prove it on the lab's standalone ESXi
    (192.168.35.21) with a restore point taken from the vCenter cluster.
-1c. **Export a restore point as OVF/OVA.** Button on a restore point (web UI
+1c. **Export a copy of a restore point as OVF/OVA.** Read-only: the restore point
+   is untouched and stays restorable; the OVA is an extra file. Button on a restore point (web UI
    and plug-in): a task streams each disk from the chunk store through
    `qemu-img convert -O vmdk -o subformat=streamOptimized`, writes the OVF
    descriptor from the neutral spec and a SHA-256 manifest, tars them into an

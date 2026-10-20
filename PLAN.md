@@ -29,7 +29,9 @@ Next, in order:
    plug-in's Backups tab, exports catalogue with download and delete. Disks
    go through `qemu-img convert -O vmdk -o subformat=streamOptimized`; OVF
    descriptor and SHA-256 manifest are generated from the neutral spec; OVA
-   is a PAX tar. First export: matt-test1, 5.4 GiB allocated -> 2.2 GiB OVA.
+   is a PAX tar. Verified: matt-test1 restore point (5.4 GiB allocated) ->
+   2.2 GiB OVA, imported back into vCenter with `govc import.ova`, booted,
+   got an IP; the source restore point untouched.
 2. **Phase 2, vCenter plug-in.** Manifest, registration, Backup now and
    Restore on the VM menu, a VM tab with restore points, tasks mirrored into
    Recent Tasks. The UI pages already run inside an iframe; the session

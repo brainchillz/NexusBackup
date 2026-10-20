@@ -1,0 +1,6 @@
+*-creds
+spike/out/
+spike/*.log
+venv/
+__pycache__/
+*.env

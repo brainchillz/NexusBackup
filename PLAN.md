@@ -3,6 +3,41 @@
 Status: draft, 2026-10-20
 Working name: pending (referred to as "the server" below)
 
+## 0. Status and next steps (2026-10-20)
+
+Done: Phase 0 (spike), Phase 1 (hvbackup 0.1.0 installed on serenity, nightly
+job on two test VMs), Phase 2b declarative tier (dashboard plug-in). Full
+detail per phase in §8.
+
+Next, in order:
+
+1. **Soak and harden, two weeks.** Let the nightly job run, add real VMs once
+   comfortable, one test restore a week, fix what the logs show. Known items:
+   a dedicated least-privilege vCenter role instead of administrator;
+   server-driven proxy deployment so a new cluster needs no manual agent
+   install.
+2. **Phase 2, vCenter plug-in.** Manifest, registration, Backup now and
+   Restore on the VM menu, a VM tab with restore points, tasks mirrored into
+   Recent Tasks. The UI pages already run inside an iframe; the session
+   exchange is the only new auth piece.
+3. **Phase 3, Proxmox provider.** PVE 9 backup-provider shim into the same
+   ingest endpoint, restore to Proxmox, containers as file trees. Makes the
+   catalog cross-platform, which conversion depends on.
+4. **Phase 4, SSO.** Nexus assertion, generic OIDC, vCenter and Proxmox
+   session mapping. Waits for both plug-ins so all four doors are tested
+   together.
+5. **Phase 5, conversion.** virt-v2v in place for VMware to Proxmox, our own
+   fixup module for the reverse, KVM test boot on serenity (needs the
+   libguestfs tool set installed there).
+6. **Dashboard Python tier**, alongside whichever phase is running.
+
+Open decisions for the owner: which real VMs join the nightly job during the
+soak; whether Proxmox (3) should come before the vCenter plug-in (2).
+
+Where things are written down: this file (design and status), `README.md`
+(install and use), `../OTNOPS-Infra/hosts/testserver.md` (serenity install,
+credentials, proxy), the GitLab project brainchill/hypervisor-backup-server.
+
 ## 1. What we are building
 
 A Linux service that backs up virtual machines from VMware (vCenter or

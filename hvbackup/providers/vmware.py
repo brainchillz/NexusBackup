@@ -81,6 +81,7 @@ class VMware:
             self.si = SmartConnect(host=self.host, user=self.username, pwd=self.password,
                                    sslContext=ssl._create_unverified_context())
         self.content = self.si.RetrieveContent()
+        self.is_vcenter = self.content.about.apiType == 'VirtualCenter'
         return self
 
     def __exit__(self, *a):
@@ -128,19 +129,34 @@ class VMware:
                 return r['obj']
         return None
 
+    def http_host(self, host):
+        """Address for datastore HTTP on this host. Through vCenter the host's inventory name
+        is what vCenter resolves (an IP or FQDN); a standalone host often calls itself
+        'localhost.localdomain', so there we use the address the connection was made to."""
+        return host.name if self.is_vcenter else self.host
+
     def datacenter_of(self, obj):
         while obj and not isinstance(obj, vim.Datacenter):
             obj = obj.parent
         return obj
 
     def placement(self):
+        """Hosts (with their datastores and networks), datastore space and VM folders of this
+        connection: everything a restore dialog needs to place a copy, including one that
+        came from another vCenter."""
         hosts = []
-        for h in self.collect(vim.HostSystem, ['name', 'datastore', 'network', 'parent']):
+        for h in self.collect(vim.HostSystem, ['name', 'datastore', 'network', 'parent', 'runtime.connectionState', 'runtime.inMaintenanceMode']):
             hosts.append({'name': h['name'], 'datastores': [d.name for d in (h.get('datastore') or [])],
                           'networks': [n.name for n in (h.get('network') or [])],
-                          'cluster': h['parent'].name if h.get('parent') and isinstance(h['parent'], vim.ClusterComputeResource) else ''})
+                          'cluster': h['parent'].name if h.get('parent') and isinstance(h['parent'], vim.ClusterComputeResource) else '',
+                          'connection_state': str(h.get('runtime.connectionState') or 'connected'),
+                          'maintenance': bool(h.get('runtime.inMaintenanceMode'))})
+        datastores = {}
+        for d in self.collect(vim.Datastore, ['name', 'summary.capacity', 'summary.freeSpace', 'summary.type', 'summary.accessible']):
+            datastores[d['name']] = {'capacity': d.get('summary.capacity') or 0, 'free': d.get('summary.freeSpace') or 0,
+                                     'type': d.get('summary.type') or '', 'accessible': bool(d.get('summary.accessible', True))}
         folders = [{'moref': f['obj']._moId, 'name': f['name']} for f in self.collect(vim.Folder, ['name', 'childType']) if 'VirtualMachine' in (f.get('childType') or [])]
-        return {'hosts': hosts, 'folders': folders}
+        return {'hosts': hosts, 'datastores': datastores, 'folders': folders, 'is_vcenter': self.is_vcenter}
 
     # ── inventory ────────────────────────────────────────────────────
     def inventory(self):
@@ -472,7 +488,7 @@ def _read_via_proxy(task, api, proxy_row, descriptor, size, ranges, cs, prog):
 
 def _read_via_https(task, api, vm, descriptor, size, ranges, cs, prog):
     rep = repo()
-    host = vm.runtime.host.name
+    host = api.http_host(vm.runtime.host)
     flat = api.flat_extent(host, descriptor)
     task.log(f'reading {flat} over HTTPS from {host} (powered-off VM, no proxy needed)')
     records = []
@@ -502,29 +518,127 @@ def _read_via_https(task, api, vm, descriptor, size, ranges, cs, prog):
 # ═══════════════════════════════════════════════════════════════════════
 # restore
 # ═══════════════════════════════════════════════════════════════════════
+def _usable_host(h):
+    try:
+        return h.runtime.connectionState == 'connected' and not h.runtime.inMaintenanceMode
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _ds_writable(ds, host):
+    """Accessible from this host and mounted read-write (ISO shares are usually read-only)."""
+    try:
+        if not ds.summary.accessible:
+            return False
+        for m in ds.host:
+            if m.key == host:
+                return (m.mountInfo.accessMode or 'readWrite') == 'readWrite' and m.mountInfo.accessible is not False
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def resolve_target(api, spec, manifest, options, log):
+    """Where a restore lands on THIS connection: host, datastore, folder and a network per NIC.
+    The restore point may come from another vCenter (the DR case): whatever the source
+    placement names that is not here is remapped when there is one sensible choice, and
+    refused with the list of candidates when there are several, so a copy never silently
+    lands on the wrong storage or VLAN. Explicit options always win and must exist."""
+    placement = spec.get('placement') or {}
+    hosts = {r['name']: r['obj'] for r in api.collect(vim.HostSystem, ['name'])}
+    if not hosts:
+        raise RuntimeError('this connection has no hosts')
+    src_ds = (spec['disks'][0]['datastore'] if spec.get('disks') else '') or (placement.get('datastores') or [''])[0]
+    need = sum(d.get('allocated', 0) for d in manifest['disks'])
+
+    # host
+    want = options.get('host')
+    if want:
+        if want not in hosts:
+            raise RuntimeError(f'host {want!r} is not on this connection (hosts: {", ".join(sorted(hosts))})')
+        host = hosts[want]
+    elif placement.get('host') in hosts:
+        host = hosts[placement['host']]
+    else:
+        usable = [h for h in hosts.values() if _usable_host(h)]
+        with_ds = [h for h in usable if any(d.name == src_ds for d in h.datastore)]
+        pick = with_ds if len(with_ds) == 1 else usable if len(usable) == 1 else []
+        if not pick:
+            raise RuntimeError(f'the restore point came from host {placement.get("host") or "?"}, which is not on this connection; '
+                               f'choose a host (one of: {", ".join(sorted(h.name for h in usable) or sorted(hosts))})')
+        host = pick[0]
+        log(f'source host {placement.get("host") or "?"} is not on this connection; using {host.name}')
+    if not _usable_host(host):
+        log(f'WARNING: host {host.name} is {host.runtime.connectionState}{" and in maintenance mode" if host.runtime.inMaintenanceMode else ""}')
+
+    # datastore
+    by_name = {d.name: d for d in host.datastore}
+    want = options.get('datastore')
+    if want:
+        if want not in by_name:
+            raise RuntimeError(f'datastore {want!r} is not reachable from host {host.name} (it has: {", ".join(sorted(by_name))})')
+        ds = by_name[want]
+    elif src_ds in by_name and _ds_writable(by_name[src_ds], host):
+        ds = by_name[src_ds]
+    else:
+        cands = [d for d in by_name.values() if _ds_writable(d, host) and d.summary.freeSpace >= need]
+        if not cands:
+            raise RuntimeError(f'datastore {src_ds!r} is not on host {host.name} and no other datastore there has {need / 2**30:.1f} GiB free '
+                               f'(it has: {", ".join(sorted(by_name))})')
+        ds = max(cands, key=lambda d: d.summary.freeSpace)
+        log(f'datastore {src_ds!r} is not on host {host.name}; using {ds.name} ({ds.summary.freeSpace / 2**30:.0f} GiB free)')
+    if ds.summary.freeSpace < need:
+        log(f'WARNING: {ds.name} has {ds.summary.freeSpace / 2**30:.1f} GiB free, the restore writes {need / 2**30:.1f} GiB')
+
+    # folder
+    dc = api.datacenter_of(host)
+    folder = None
+    if options.get('folder'):
+        try:
+            f = vim.Folder(options['folder'], api.si._stub)
+            if 'VirtualMachine' in f.childType and api.datacenter_of(f) == dc:
+                folder = f
+        except Exception:  # noqa: BLE001
+            folder = None
+        if folder is None:
+            log(f'folder {options["folder"]!r} is not a VM folder of this datacenter; using the root VM folder')
+    if folder is None:
+        folder = dc.vmFolder
+
+    # networks: one target per source network
+    host_nets = {n.name: n for n in host.network}
+    mapping = dict(options.get('networks') or {})
+    nets = {}
+    for n in spec.get('nics') or []:
+        src = n.get('network') or ''
+        if src in nets:
+            continue
+        dst = mapping.get(src, src)
+        if dst in host_nets:
+            nets[src] = host_nets[dst]
+        elif dst != src:
+            raise RuntimeError(f'network {dst!r} is not on host {host.name} (it has: {", ".join(sorted(host_nets))})')
+        elif len(host_nets) == 1:
+            nets[src] = next(iter(host_nets.values()))
+            log(f'network {src!r} is not on host {host.name}; using {nets[src].name}')
+        else:
+            raise RuntimeError(f'{"network " + repr(src) if src else "a NIC with no recorded network"} is not on host {host.name}; '
+                               f'map {src!r} to one of: {", ".join(sorted(host_nets))}')
+    return {'host': host, 'datastore': ds, 'folder': folder, 'datacenter': dc, 'pool': host.parent.resourcePool, 'networks': nets}
+
+
 def restore_vm(task, api: VMware, rp, options, proxy_row):
-    """options: name, power_on, new_identity (fresh MACs), datastore, host (name), folder (moref), network overrides."""
+    """options: name, power_on, new_identity (fresh MACs), host (name), datastore, folder (moref),
+    networks ({source network: target network}). Anything unset is taken from the restore
+    point and remapped by resolve_target when the target is a different vCenter or host."""
     rep = repo()
     manifest = rep.read_manifest(rp['manifest'])
     spec = manifest['vm']
     cs = manifest['chunk_size']
     name = options.get('name') or spec['name']
-    host_name = options.get('host') or spec['placement'].get('host')
-    hosts = {r['name']: r['obj'] for r in api.collect(vim.HostSystem, ['name'])}
-    if host_name not in hosts:
-        raise RuntimeError(f'host {host_name!r} not found on this connection')
-    host = hosts[host_name]
-    dc = api.datacenter_of(host)
-    ds_name = options.get('datastore') or (spec['disks'][0]['datastore'] if spec['disks'] else '') or spec['placement'].get('datastores', [''])[0]
-    ds = next((d for d in host.datastore if d.name == ds_name), None)
-    if ds is None:
-        raise RuntimeError(f'datastore {ds_name!r} not reachable from host {host_name}')
-    pool = host.parent.resourcePool
-    folder = None
-    if options.get('folder'):
-        folder = vim.Folder(options['folder'], api.si._stub)
-    if folder is None:
-        folder = dc.vmFolder
+    t = resolve_target(api, spec, manifest, options, task.log)
+    host, ds, folder, dc, pool = t['host'], t['datastore'], t['folder'], t['datacenter'], t['pool']
+    host_name = host.name
     for r in api.collect(vim.VirtualMachine, ['name']):
         if r['name'] == name:
             raise RuntimeError(f'a VM named {name!r} already exists')
@@ -534,6 +648,21 @@ def restore_vm(task, api: VMware, rp, options, proxy_row):
     task.vc_task = vct
     api.content.fileManager.MakeDirectory(name=vm_folder, datacenter=dc, createParentDirectories=True)
     task.log(f'restoring {spec["name"]} as {name} on {host_name} / {ds.name}')
+    try:
+        return _restore_into(task, api, rp, options, proxy_row, rep, manifest, spec, cs, name, host, ds, folder, dc, pool, t, vm_folder, vct)
+    except BaseException as e:
+        # MakeDirectory above refuses an existing folder, so this one is ours: a cancelled
+        # or failed restore leaves no half-written disks behind on the datastore.
+        task.log(f'restore {"cancelled" if isinstance(e, Cancelled) else "failed"}; removing {vm_folder}')
+        try:
+            wait_task(api.content.fileManager.DeleteDatastoreFile_Task(name=vm_folder, datacenter=dc), 'remove partial files')
+        except Exception as e2:  # noqa: BLE001
+            task.log(f'WARNING: could not remove {vm_folder}: {e2}')
+        raise
+
+
+def _restore_into(task, api, rp, options, proxy_row, rep, manifest, spec, cs, name, host, ds, folder, dc, pool, t, vm_folder, vct):
+    host_name = host.name
     total = sum(d['allocated'] for d in manifest['disks'])
     done = 0
     created = []
@@ -553,7 +682,11 @@ def restore_vm(task, api: VMware, rp, options, proxy_row):
         if proxy_row is not None:
             _write_via_proxy(task, api, proxy_row, path, d['capacity'], records, cs, prog)
         else:
-            _write_via_https(task, api, host.name, path, d['capacity'], hashes, cs, prog)
+            # the upload sends the whole capacity, zero blocks included; scale it to the
+            # allocated bytes the progress bar is measured in
+            scale = d['allocated'] / max(d['capacity'], 1)
+            _write_via_https(task, api, api.http_host(host), path, d['capacity'], hashes, cs, lambda b: prog(b * scale))
+        task.check_cancel()
         done += d['allocated']
 
     # ── build the VM ─────────────────────────────────────────────────
@@ -588,13 +721,8 @@ def restore_vm(task, api: VMware, rp, options, proxy_row):
                                          backing=vim.vm.device.VirtualDisk.FlatVer2BackingInfo(fileName=path, diskMode='persistent'))
         dev_changes.append(vim.vm.device.VirtualDeviceSpec(operation='add', device=disk))
         key -= 1
-    host_nets = {n.name: n for n in host.network}
     for n in spec['nics']:
-        net_name = (options.get('networks') or {}).get(n['network'], n['network'])
-        net = host_nets.get(net_name)
-        if net is None:
-            task.log(f'WARNING: network {net_name!r} not on host {host_name}; NIC left disconnected on first available network')
-            net = next(iter(host_nets.values()), None)
+        net = t['networks'].get(n.get('network') or '')
         cls = NIC_CLASSES.get(n['model'], vim.vm.device.VirtualVmxnet3)
         nic = cls(key=key)
         if isinstance(net, vim.dvs.DistributedVirtualPortgroup):
@@ -645,8 +773,11 @@ def _write_via_proxy(task, api, proxy_row, descriptor, size, records, cs, prog):
 
 
 class _ChunkStream:
-    def __init__(self, rep, hashes, cs, size, prog):
-        self.rep, self.hashes, self.cs, self.size, self.prog = rep, hashes, cs, size, prog
+    """File-like body for the HTTPS PUT: chunks fetched from the repository on demand,
+    cancel checked once per chunk so a cancelled restore stops the upload."""
+
+    def __init__(self, rep, hashes, cs, size, prog, task=None):
+        self.rep, self.hashes, self.cs, self.size, self.prog, self.task = rep, hashes, cs, size, prog, task
         self.i = 0
         self.buf = b''
         self.sent = 0
@@ -656,6 +787,8 @@ class _ChunkStream:
 
     def read(self, n=-1):
         while len(self.buf) < n and self.i < len(self.hashes):
+            if self.task is not None and self.i % 8 == 0:
+                self.task.check_cancel()
             self.buf += self.rep.get(self.hashes[self.i])
             self.i += 1
         if self.sent + n > self.size:
@@ -670,7 +803,7 @@ def _write_via_https(task, api, host, descriptor, size, hashes, cs, prog):
     flat = api.flat_extent(host, descriptor)
     url = api.ds_url(host, flat)
     task.log(f'uploading {flat} over HTTPS to {host} (no proxy)')
-    r = requests.put(url, data=_ChunkStream(repo(), hashes, cs, size, prog), headers={'Content-Type': 'application/octet-stream'},
+    r = requests.put(url, data=_ChunkStream(repo(), hashes, cs, size, prog, task), headers={'Content-Type': 'application/octet-stream'},
                      cookies={'vmware_cgi_ticket': api.ticket('httpPut', url)}, verify=False, timeout=24 * 3600)
     if r.status_code not in (200, 201):
         raise RuntimeError(f'upload failed: HTTP {r.status_code}')

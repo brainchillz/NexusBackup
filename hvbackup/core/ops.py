@@ -277,9 +277,14 @@ def restore(task, restore_point_id, options):
         vm_row = db.row_to_dict(c.execute('SELECT * FROM vms WHERE id=?', (rp['vm_id'],)).fetchone())
     conn_id = options.get('connection_id') or vm_row['connection_id']
     cr = connection(conn_id)
+    if cr['type'] not in ('vcenter', 'esxi'):
+        raise RuntimeError(f'restore to a {cr["type"]} connection is not supported yet')
+    # The source connection is never contacted: a restore reads only the repository, so a
+    # vCenter that no longer exists is no obstacle to restoring its VMs elsewhere.
     with open_api(cr) as api:
         proxy = pick_proxy(cr['id'])
-        task.log(f'restore point {rp["id"]} of {vm_row["name"]} -> {cr["name"]} via {"proxy " + proxy["name"] if proxy else "HTTPS upload"}')
+        where = cr['name'] if conn_id == vm_row['connection_id'] else f'{cr["name"]} (a different connection than the backup came from)'
+        task.log(f'restore point {rp["id"]} of {vm_row["name"]} -> {where} via {"proxy " + proxy["name"] if proxy else "HTTPS upload"}')
         try:
             res = vmware.restore_vm(task, api, rp, options, proxy)
         except Exception as e:

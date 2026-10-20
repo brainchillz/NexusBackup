@@ -6,8 +6,9 @@ Working name: pending (referred to as "the server" below)
 ## 0. Status and next steps (2026-10-20)
 
 Done: Phase 0 (spike), Phase 1 (hvbackup 0.1.0 installed on serenity, nightly
-job on two test VMs), Phase 2b declarative tier (dashboard plug-in). Full
-detail per phase in §8.
+job on two test VMs), Phase 2 (vCenter plug-in, two visual checks open), Phase
+2b both tiers (dashboard plug-in), OVA export, restore to a different target.
+Full detail per phase in §8.
 
 Next, in order:
 
@@ -16,14 +17,25 @@ Next, in order:
    a dedicated least-privilege vCenter role instead of administrator;
    server-driven proxy deployment so a new cluster needs no manual agent
    install.
-1b. **Restore to a different target (DR case).** A vCenter-managed VM must be
-   restorable onto a different ESXi host or cluster, including a standalone
-   host added as its own connection, when the original cluster is gone. The
-   API already accepts `connection_id` on a restore; still to do: expose the
-   target picker in the web UI and the plug-in modal, map networks and
-   datastores between source and target, handle a powered-off/unreachable
-   source vCenter gracefully, and prove it on the lab's standalone ESXi
-   (192.168.35.21) with a restore point taken from the vCenter cluster.
+1b. **Restore to a different target (DR case)** (built 2026-10-20). Any
+   connection can be the target. `providers.vmware.resolve_target` remaps
+   host, datastore, folder and networks: one sensible candidate is taken and
+   logged, several are refused with the list, explicit choices must exist.
+   Target picker with live placement (hosts with state, datastores with free
+   space, a network picker per source network, folder) in the web UI dialog
+   and the plug-in modal; CLI `--connection id|name`, `--network SRC=DST`,
+   `--folder`, and `connections placement`. The source vCenter is never
+   contacted; deleting a connection that still owns restore points is
+   refused. Standalone hosts: datastore HTTP goes to the connection address
+   (the host calls itself localhost). A failed or cancelled restore removes
+   its half-written folder; HTTPS uploads are cancellable. Proven: matt-test1
+   restore point 3 (taken through lab-vcenter) restored through the direct
+   connection to ESXi 192.168.35.21 as `matt-test1-dr`, host remapped, booted,
+   tools up, got 192.168.34.11. Found and fixed on the way: task progress was
+   written to the catalog per 8 KiB of upload, which held HTTPS restores to
+   ~2 MiB/s (now throttled to two writes a second; ~7 MiB/s after, bounded by
+   the ESXi HTTPS PUT path, which also sends every zero block of the disk's
+   capacity. Proxy-less restores of large thin disks are slow by design.)
 1c. **Export a copy of a restore point as OVF/OVA** (built 2026-10-20). Read-only
    on the backup. `hvbackup export`, Export OVA buttons in the web UI and the
    plug-in's Backups tab, exports catalogue with download and delete. Disks
@@ -32,18 +44,23 @@ Next, in order:
    is a PAX tar. Verified: matt-test1 restore point (5.4 GiB allocated) ->
    2.2 GiB OVA, imported back into vCenter with `govc import.ova`, booted,
    got an IP; the source restore point untouched.
-1d. **Nexus Dashboard Python-tier plug-in** (promoted 2026-10-20, right after the
-   vSphere block). Replaces the iframe-based declarative page on the node that
-   runs hvbackup with a native module: pages rendered by the dashboard's own
-   tables and cards from the hvbackup API (inventory with protection state,
-   jobs, runs, restore points), admin actions (Backup now, Run job, Export
-   OVA), a `/api/summary` block, alerts for failed runs, offline proxies and
-   overdue backups, history metrics (bytes protected, repository usage), and a
-   front-page card. The declarative tier stays as the zero-code option.
-2. **Phase 2, vCenter plug-in.** Manifest, registration, Backup now and
-   Restore on the VM menu, a VM tab with restore points, tasks mirrored into
-   Recent Tasks. The UI pages already run inside an iframe; the session
-   exchange is the only new auth piece.
+1d. **Nexus Dashboard Python-tier plug-in** (built 2026-10-20):
+   `plugins/nexusdash/vm-backup/`, module id `vm-backup`. Flask blueprint
+   proxying the hvbackup API with one token kept in the dashboard user's
+   `~/.config/hvbackup/client.conf` (shared with the CLI and the declarative
+   tier; the plug-in directory stays root-owned, so state cannot live there).
+   Pages VM Backup (cards, connections, proxies, every VM with a protection
+   state: protected / stale / overdue / failed / unprotected, jobs) and Backup
+   History (tasks with live log modal, runs, restore points, exports); admin
+   actions Back up now, Run now, Export OVA, cancel task; Settings dialog with
+   Test; front-page card; `/api/summary` block; alerts (server down, failed,
+   overdue, proxy offline); history metrics `hvb_*`; Prometheus lines.
+   Installed and enabled on serenity, declarative `hvbackup` module disabled
+   there (both would put a VM Backup page in the sidebar). The declarative
+   tier stays as the zero-code option.
+2. **Phase 2, vCenter plug-in, loose ends.** Built and registered (§8). Still
+   to confirm visually in the vSphere Client: the Recent Tasks mirror, and a
+   restore from the modal, now with the target picker.
 3. **Phase 3, Proxmox provider.** PVE 9 backup-provider shim into the same
    ingest endpoint, restore to Proxmox, containers as file trees. Makes the
    catalog cross-platform, which conversion depends on.
@@ -55,7 +72,7 @@ Next, in order:
    libguestfs tool set installed there).
 
 Open decisions for the owner: which real VMs join the nightly job during the
-soak; whether Proxmox (3) should come before the vCenter plug-in (2).
+soak; whether Proxmox (3) comes next or the Phase 2 visual checks (2).
 
 Where things are written down: this file (design and status), `README.md`
 (install and use), `../OTNOPS-Infra/hosts/testserver.md` (serenity install,
@@ -499,12 +516,13 @@ three-part manifest version strings (`1.0.0`), not the `1.0.0.0` the SDK
 guide shows. Still to confirm visually: Recent Tasks mirror, a restore from
 the modal.
 
-### Phase 2b — Nexus Dashboard plug-in (declarative tier shipped)
+### Phase 2b — Nexus Dashboard plug-in (both tiers shipped 2026-10-20)
 `plugins/nexusdash/hvbackup/plugin.yaml`: service card, status table from
-`hvbackup status --tsv`, recent runs, journal, embedded console. Python tier
-(summary, alerts, backup-now actions) still to do.
-Exit criteria: protection status, alerts and backup-now from a dashboard
-node.
+`hvbackup status --tsv`, recent runs, journal, embedded console.
+`plugins/nexusdash/vm-backup/`: the Python tier, see §0 item 1d. Exit criteria
+met on serenity: protection status, alerts and Back up now from a dashboard
+node (verified through the dashboard API with an operator token; history
+sampler recorded `hvb_repo_used`).
 
 ### Phase 3 — Proxmox provider
 Ingest endpoint, PVE 9 backup provider shim, restore to Proxmox, container

@@ -13,7 +13,8 @@ Client side (any machine; HVB_URL + HVB_TOKEN, or ~/.config/hvbackup/client.conf
   hvbackup jobs list|add|run|delete
   hvbackup runs list
   hvbackup restore-points list [--vm <vm>]
-  hvbackup restore <rp> --name NAME [--power-on] [--keep-identity] [--host H] [--datastore DS] [--wait]
+  hvbackup restore <rp> --name NAME [--connection C] [--host H] [--datastore DS] [--network SRC=DST]... [--power-on] [--keep-identity] [--wait]
+  hvbackup connections placement <id|name>      hosts, datastores and networks to restore onto
   hvbackup tasks list|show|wait|cancel
   hvbackup proxies list|add <name>
   hvbackup users list|add|passwd ; hvbackup tokens list|add|delete
@@ -206,6 +207,33 @@ def cmd_connections(args):
         out(args, res) if args.json else wait_task(c, res['task_id'])
     elif args.action == 'delete':
         out(args, c.call('DELETE', f'/connections/{args.id}'))
+    elif args.action == 'placement':
+        p = c.call('GET', f'/connections/{resolve_connection(c, args.id)}/placement')
+        if args.json:
+            out(args, p)
+            return
+        ds = p.get('datastores') or {}
+        for h in p['hosts']:
+            state = '' if h.get('connection_state', 'connected') == 'connected' and not h.get('maintenance') else f' [{h.get("connection_state")}{", maintenance" if h.get("maintenance") else ""}]'
+            print(f'host {h["name"]}{" (" + h["cluster"] + ")" if h.get("cluster") else ""}{state}')
+            for d in h['datastores']:
+                i = ds.get(d) or {}
+                print(f'  datastore {d}' + (f'  {fmt_bytes(i["free"])} free of {fmt_bytes(i["capacity"])}' if i else '') + ('' if i.get('accessible', True) else '  (inaccessible)'))
+            for n in h['networks']:
+                print(f'  network   {n}')
+        for f in p['folders']:
+            print(f'folder {f["name"]} ({f["moref"]})')
+
+
+def resolve_connection(c, ref):
+    if ref is None:
+        return None
+    if str(ref).isdigit():
+        return int(ref)
+    for r in c.call('GET', '/connections'):
+        if r['name'] == ref:
+            return r['id']
+    sys.exit(f'no connection named {ref!r}')
 
 
 def cmd_vms(args):
@@ -265,8 +293,14 @@ def cmd_restore_points(args):
 
 def cmd_restore(args):
     c = Client()
+    nets = {}
+    for m in args.network or []:
+        if '=' not in m:
+            sys.exit(f'--network wants SOURCE=TARGET, got {m!r}')
+        a, b = m.split('=', 1)
+        nets[a] = b
     body = {'name': args.name, 'power_on': args.power_on, 'new_identity': not args.keep_identity, 'host': args.host, 'datastore': args.datastore,
-            'connection_id': args.connection}
+            'connection_id': resolve_connection(c, args.connection), 'folder': args.folder, 'networks': nets or None}
     res = c.call('POST', f'/restore-points/{args.rp}/restore', json=body)
     out(args, res)
     if args.wait and not args.json:
@@ -381,7 +415,7 @@ def main(argv=None):
     sub.add_parser('agent', help='run the proxy agent').set_defaults(fn=cmd_agent)
 
     p = sub.add_parser('status'); p.add_argument('--tsv', action='store_true'); p.set_defaults(fn=cmd_status)
-    p = sub.add_parser('connections'); p.add_argument('action', choices=['list', 'add', 'test', 'refresh', 'delete']); p.add_argument('id', nargs='?')
+    p = sub.add_parser('connections'); p.add_argument('action', choices=['list', 'add', 'test', 'refresh', 'delete', 'placement']); p.add_argument('id', nargs='?')
     p.add_argument('--type', choices=['vcenter', 'esxi', 'proxmox'], default='vcenter'); p.add_argument('--name'); p.add_argument('--host'); p.add_argument('--username'); p.add_argument('--password'); p.add_argument('--verify-ssl', action='store_true'); p.set_defaults(fn=cmd_connections)
     p = sub.add_parser('vms'); p.add_argument('action', choices=['list'], nargs='?', default='list'); p.add_argument('--connection', type=int); p.set_defaults(fn=cmd_vms)
     p = sub.add_parser('backup'); p.add_argument('vm'); p.add_argument('--wait', action='store_true'); p.add_argument('--no-quiesce', action='store_true'); p.set_defaults(fn=cmd_backup)
@@ -391,7 +425,10 @@ def main(argv=None):
     p = sub.add_parser('runs'); p.add_argument('action', choices=['list'], nargs='?', default='list'); p.add_argument('--limit', type=int, default=50); p.set_defaults(fn=cmd_runs)
     p = sub.add_parser('restore-points'); p.add_argument('action', choices=['list'], nargs='?', default='list'); p.add_argument('--vm'); p.set_defaults(fn=cmd_restore_points)
     p = sub.add_parser('restore'); p.add_argument('rp', type=int); p.add_argument('--name', required=True); p.add_argument('--power-on', action='store_true'); p.add_argument('--keep-identity', action='store_true')
-    p.add_argument('--host'); p.add_argument('--datastore'); p.add_argument('--connection', type=int); p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_restore)
+    p.add_argument('--host', help='target host name as the target connection shows it'); p.add_argument('--datastore'); p.add_argument('--folder', help='VM folder moref on the target (see connections placement)')
+    p.add_argument('--connection', help='target connection id or name; any connection, not only the one the backup came from')
+    p.add_argument('--network', action='append', metavar='SOURCE=TARGET', help='map a source network to one on the target (repeatable)')
+    p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_restore)
     p = sub.add_parser('tasks'); p.add_argument('action', choices=['list', 'show', 'wait', 'cancel']); p.add_argument('id', nargs='?', type=int); p.add_argument('--limit', type=int, default=30); p.set_defaults(fn=cmd_tasks)
     p = sub.add_parser('proxies'); p.add_argument('action', choices=['list', 'add', 'delete']); p.add_argument('name', nargs='?'); p.add_argument('--connection', type=int); p.set_defaults(fn=cmd_proxies)
     p = sub.add_parser('users'); p.add_argument('action', choices=['list', 'add', 'passwd', 'delete']); p.add_argument('username', nargs='?'); p.add_argument('--password'); p.add_argument('--role', default='viewer'); p.set_defaults(fn=cmd_users)

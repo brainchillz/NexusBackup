@@ -4,40 +4,83 @@
 <div id="hvb-error" class="err"></div>
 <div id="hvb-main">
   <label>Restore point</label><select id="rp"></select>
-  <div class="row"><div><label>New VM name</label><input type="text" id="name"></div><div><label>Host</label><select id="host"></select></div></div>
-  <div class="row"><div><label>Datastore</label><select id="ds"></select></div><div><label>&nbsp;</label><label class="check" style="margin:0"><input type="checkbox" id="poweron"> Power on after restore</label></div></div>
+  <div class="row"><div><label>New VM name</label><input type="text" id="name"></div><div><label>Target</label><select id="conn"></select></div></div>
+  <div class="row"><div><label>Host</label><select id="host"></select></div><div><label>Datastore</label><select id="ds"></select></div></div>
+  <div id="nets"></div>
+  <p class="muted" id="drnote" style="display:none">This is not the vCenter the backup came from. Only the backup repository is read; check the host, datastore and networks the copy should use.</p>
+  <label class="check"><input type="checkbox" id="poweron"> Power on after restore</label>
   <label class="check"><input type="checkbox" id="newid" checked> New identity (fresh MAC addresses and BIOS UUID). Untick only when the original VM is gone: the guest keeps its DHCP lease and host keys either way.</label>
   <div id="progress"></div>
   <div class="actions"><button id="cancel">Close</button><button class="primary" id="go" disabled>Restore</button></div>
 </div>
 <script>
 HVB.init(function (ctx) {
-  var vm, rps = [], custom = {}; try { custom = htmlClientSdk.modal.getCustomData() || {}; } catch (e) { }
+  var vm, full, rps = [], srcNets = [], srcDs = '', srcHost = '', srcConn = 0, placement = null, custom = {};
+  try { custom = htmlClientSdk.modal.getCustomData() || {}; } catch (e) { }
   if (!ctx.length) { HVB.fail('No VM in context.'); return; }
+  function $(id) { return document.getElementById(id); }
+  function opt(v, label, dis) { return '<option value="' + HVB.esc(v) + '"' + (dis ? ' disabled' : '') + '>' + HVB.esc(label) + '</option>'; }
+  function fillHost() {
+    var h = null, i; for (i = 0; placement && i < placement.hosts.length; i++) if (placement.hosts[i].name === $('host').value) h = placement.hosts[i];
+    var info = (placement && placement.datastores) || {}, need = 0, rp = null;
+    for (i = 0; i < rps.length; i++) if (String(rps[i].id) === $('rp').value) rp = rps[i];
+    if (rp) need = rp.allocated_bytes || 0;
+    var dss = (h ? h.datastores : []).map(function (n) { var d = info[n] || {}; return { name: n, free: d.free, accessible: d.accessible }; });
+    dss.sort(function (a, b) { return (b.free || 0) - (a.free || 0); });
+    $('ds').innerHTML = dss.map(function (d) { var small = d.free != null && d.free < need; return opt(d.name, d.name + (d.free != null ? ' - ' + HVB.fmtBytes(d.free) + ' free' : '') + (d.accessible === false ? ' (inaccessible)' : small ? ' (too small)' : ''), d.accessible === false || small); }).join('');
+    for (i = 0; i < dss.length; i++) if (dss[i].name === srcDs && dss[i].accessible !== false && !(dss[i].free != null && dss[i].free < need)) $('ds').value = srcDs;
+    var nets = h ? h.networks : [];
+    $('nets').innerHTML = srcNets.map(function (n, idx) {
+      var found = nets.indexOf(n) >= 0, auto = !found && nets.length === 1;
+      return '<label>Network for ' + HVB.esc(n || '(unknown)') + (found || auto ? '' : ' - not on this host, choose') + '</label><select id="net' + idx + '">' + (found || auto ? '' : '<option value="">(choose)</option>') + nets.map(function (x) { return '<option value="' + HVB.esc(x) + '"' + (x === n || auto ? ' selected' : '') + '>' + HVB.esc(x) + '</option>'; }).join('') + '</select>';
+    }).join('');
+  }
+  function loadPlacement() {
+    var cid = Number($('conn').value);
+    $('host').innerHTML = opt('', 'loading...'); $('ds').innerHTML = ''; $('nets').innerHTML = '';
+    $('drnote').style.display = cid === srcConn ? 'none' : '';
+    return HVB.api('GET', '/connections/' + cid + '/placement').then(function (p) {
+      placement = p;
+      var hosts = p.hosts || [], usable = [], i;
+      $('host').innerHTML = hosts.map(function (h) { var bad = (h.connection_state && h.connection_state !== 'connected') || h.maintenance; if (!bad) usable.push(h); return opt(h.name, h.name + (h.cluster ? ' (' + h.cluster + ')' : '') + (h.maintenance ? ' - maintenance' : '') + (h.connection_state && h.connection_state !== 'connected' ? ' - ' + h.connection_state : ''), bad); }).join('');
+      var pick = null;
+      if (cid === srcConn) for (i = 0; i < usable.length; i++) if (usable[i].name === srcHost) pick = usable[i];
+      for (i = 0; !pick && i < usable.length; i++) if (usable[i].datastores.indexOf(srcDs) >= 0) pick = usable[i];
+      if (!pick) pick = usable[0];
+      if (pick) $('host').value = pick.name;
+      fillHost();
+      $('go').disabled = !(HVB.user && /restore|operator|admin/.test(HVB.user.role));
+    }).catch(function (e) { placement = null; $('host').innerHTML = ''; $('progress').innerHTML = '<div>' + HVB.badge('failed') + ' cannot read the target: ' + HVB.esc(e.message) + '</div>'; });
+  }
   HVB.resolve(ctx[0]).then(function (v) {
     vm = v;
-    return Promise.all([HVB.api('GET', '/restore-points?vm_id=' + v.id), HVB.api('GET', '/vms/' + v.id)]);
+    return Promise.all([HVB.api('GET', '/restore-points?vm_id=' + v.id), HVB.api('GET', '/vms/' + v.id), HVB.api('GET', '/connections')]);
   }).then(function (res) {
-    rps = res[0]; var full = res[1];
-    var sel = document.getElementById('rp'); sel.innerHTML = rps.map(function (r) { return '<option value="' + r.id + '">' + HVB.esc(HVB.fmtTime(r.created) + ' · ' + r.kind + ' · ' + HVB.fmtBytes(r.allocated_bytes)) + '</option>'; }).join('');
+    rps = res[0]; full = res[1]; var conns = res[2];
+    var sel = $('rp'); sel.innerHTML = rps.map(function (r) { return '<option value="' + r.id + '">' + HVB.esc(HVB.fmtTime(r.created) + ' · ' + r.kind + ' · ' + HVB.fmtBytes(r.allocated_bytes)) + '</option>'; }).join('');
     if (custom.rp) sel.value = custom.rp;
     if (!rps.length) { HVB.fail('No restore points for ' + vm.name + '.'); return; }
-    document.getElementById('name').value = vm.name + '-restored';
-    return HVB.api('GET', '/connections/' + full.connection_id + '/placement').then(function (p) {
-      var hs = document.getElementById('host'), ds = document.getElementById('ds');
-      hs.innerHTML = p.hosts.map(function (h) { return '<option value="' + HVB.esc(h.name) + '">' + HVB.esc(h.name + (h.cluster ? ' (' + h.cluster + ')' : '')) + '</option>'; }).join('');
-      function fillDs() { var h = p.hosts.filter(function (x) { return x.name === hs.value; })[0]; ds.innerHTML = (h ? h.datastores : []).map(function (d) { return '<option>' + HVB.esc(d) + '</option>'; }).join(''); }
-      hs.onchange = fillDs; if (full.host) hs.value = full.host; fillDs();
-      document.getElementById('go').disabled = !(HVB.user && /restore|operator|admin/.test(HVB.user.role));
-    });
+    srcConn = full.connection_id; srcHost = full.host || '';
+    var spec = full.spec || {}, pl = spec.placement || {}, seen = {};
+    srcDs = (spec.disks && spec.disks[0] && spec.disks[0].datastore) || (pl.datastores && pl.datastores[0]) || '';
+    (spec.nics || []).forEach(function (n) { var k = n.network || ''; if (!seen[k]) { seen[k] = 1; srcNets.push(k); } });
+    $('name').value = vm.name + '-restored';
+    $('conn').innerHTML = conns.filter(function (c) { return c.type !== 'proxmox'; }).map(function (c) { return opt(c.id, c.name + ' (' + c.type + ')'); }).join('');
+    $('conn').value = String(srcConn);
+    $('conn').onchange = loadPlacement; $('host').onchange = fillHost; sel.onchange = fillHost;
+    return loadPlacement();
   }).catch(function (e) { HVB.fail(e.message); });
-  document.getElementById('cancel').onclick = function () { HVB.close(); };
-  document.getElementById('go').onclick = function () {
-    var go = this; go.disabled = true;
-    var body = { name: document.getElementById('name').value, host: document.getElementById('host').value, datastore: document.getElementById('ds').value, power_on: document.getElementById('poweron').checked, new_identity: document.getElementById('newid').checked };
-    var box = document.getElementById('progress'); box.innerHTML = '<div><span class="muted">starting…</span></div><div class="progress"><div style="width:0"></div></div>';
-    HVB.api('POST', '/restore-points/' + document.getElementById('rp').value + '/restore', body).then(function (d) {
-      HVB.pollTask(d.task_id, function (t) { box.querySelector('span').innerHTML = HVB.badge(t.state) + ' ' + HVB.esc(t.message || ''); box.querySelector('.progress > div').style.width = Math.round(t.progress * 100) + '%'; if (t.state === 'done') document.getElementById('cancel').textContent = 'Close'; });
+  $('cancel').onclick = function () { HVB.close(); };
+  $('go').onclick = function () {
+    var go = this, box = $('progress');
+    if (!$('host').value) { box.innerHTML = '<div>' + HVB.badge('failed') + ' pick a host on the target</div>'; return; }
+    var networks = {}, i;
+    for (i = 0; i < srcNets.length; i++) { var e = $('net' + i); if (e && e.value) networks[srcNets[i]] = e.value; }
+    go.disabled = true;
+    var body = { name: $('name').value, connection_id: Number($('conn').value), host: $('host').value, datastore: $('ds').value, networks: networks, power_on: $('poweron').checked, new_identity: $('newid').checked };
+    box.innerHTML = '<div><span class="muted">starting…</span></div><div class="progress"><div style="width:0"></div></div>';
+    HVB.api('POST', '/restore-points/' + $('rp').value + '/restore', body).then(function (d) {
+      HVB.pollTask(d.task_id, function (t) { box.querySelector('span').innerHTML = HVB.badge(t.state) + ' ' + HVB.esc(t.message || ''); box.querySelector('.progress > div').style.width = Math.round(t.progress * 100) + '%'; if (t.state === 'done') $('cancel').textContent = 'Close'; });
     }).catch(function (e) { go.disabled = false; box.querySelector('span').innerHTML = HVB.badge('failed') + ' ' + HVB.esc(e.message); });
   };
 });

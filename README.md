@@ -191,12 +191,13 @@ before the subcommand for raw output.
 |---|---|---|
 | `status [--tsv]` | One-line summary; `--tsv` is for dashboards | `hvbackup status --tsv` |
 | `connections list\|add\|test\|refresh\|delete` | Manage hypervisor connections | `hvbackup connections add --type vcenter --name lab --host 192.168.35.10 --username administrator@vsphere.local` |
+| `connections placement <id\|name>` | Hosts, datastores (with free space) and networks a restore can land on | `hvbackup connections placement dr-site` |
 | `vms list [--connection N]` | Inventory with protection status | `hvbackup vms list` |
 | `backup <vm> [--wait] [--no-quiesce]` | Back up one VM now (name or id) | `hvbackup backup web01 --wait` |
 | `jobs list\|add\|run\|delete` | Scheduled jobs | `hvbackup jobs add --name nightly --vms web01 db01 --schedule "0 2 * * *" --keep-last 14` |
 | `runs list [--limit N]` | Backup run history | `hvbackup runs list` |
 | `restore-points list [--vm <vm>]` | Restore points | `hvbackup restore-points list --vm web01` |
-| `restore <rp> --name NAME [...]` | Restore as a new VM; `--power-on`, `--keep-identity`, `--host`, `--datastore`, `--connection`, `--wait` | `hvbackup restore 12 --name web01-restored --power-on --wait` |
+| `restore <rp> --name NAME [...]` | Restore as a new VM; `--connection` (id or name, any target), `--host`, `--datastore`, `--folder`, `--network SRC=DST` (repeatable), `--power-on`, `--keep-identity`, `--wait` | `hvbackup restore 12 --name web01-restored --connection dr-site --network "VM Network=DR-VLAN30" --power-on --wait` |
 | `tasks list\|show\|wait\|cancel` | Task queue and logs | `hvbackup tasks show 7` |
 | `proxies list\|add\|delete` | Proxy VMs; `add` prints the token and agent.conf | `hvbackup proxies add proxy-cluster1` |
 | `users list\|add\|passwd\|delete` | Local accounts; `--role` | `hvbackup users add alice --role operator` |
@@ -227,6 +228,44 @@ lived), power on, and identity:
 
 Restores go through the proxy when one is online (fast, hot-add write-back),
 otherwise by HTTPS upload through the ESXi host (slow but works with no proxy).
+
+#### Restoring somewhere else (disaster recovery)
+
+A restore point can be restored onto **any** connection, not only the one the
+backup came from: another vCenter, another cluster, or a standalone ESXi host
+added as its own connection. The source vCenter is never contacted; a restore
+reads only the repository, so a vCenter that no longer exists is no obstacle.
+Pick the target in the restore dialog (web UI or vSphere Client plug-in), or
+on the CLI with `--connection`.
+
+What the restore point names is remapped onto the target:
+
+- **Host**: the source host if it exists there; otherwise the only usable host
+  (connected, not in maintenance), or the only one that sees the source
+  datastore. Several candidates: you must choose (`--host`).
+- **Datastore**: the source datastore if the host sees it and it is mounted
+  read-write; otherwise the writable datastore with the most free space that
+  fits the restore point. The dialog lists free space and greys out datastores
+  that are too small.
+- **Networks**: each source network by name if the host has it; otherwise the
+  host's only network. Several networks and no match: you must map it
+  (`--network "VM Network=DR-VLAN30"`), because a copy must not silently land
+  on the wrong VLAN. The dialog shows one picker per source network.
+- **Folder**: the chosen VM folder, or the datacenter's root VM folder.
+
+Every remap is written to the task log. Explicit choices always win and are
+refused with the list of candidates when they do not exist on the target.
+
+Keep the dead vCenter's connection in the catalog: its VMs' restore points hang
+off it, and deleting a connection that still owns restore points is refused.
+An unreachable connection only costs a failed inventory refresh. A standalone
+ESXi host added as a connection needs no proxy (restores there go by HTTPS
+upload); datastore HTTP uses the address the connection was made to, since a
+standalone host usually calls itself `localhost.localdomain`.
+
+Proven in the lab on 2026-10-20: a restore point of a vCenter-managed VM
+restored through a direct connection to one of the ESXi hosts, booted, got
+an address.
 
 ### Garbage collection
 
@@ -302,7 +341,7 @@ What appears in the vSphere Client:
 | VM → Summary | an hvbackup card: protection state, restore points, last backup, last run, Back up now |
 | VM → Monitor → Backups | restore points with Restore…, run history, Back up now |
 | VM right-click → Back up now with hvbackup | modal, works on a multi-selection |
-| VM right-click → Restore with hvbackup | modal: restore point, name, host, datastore, power on, new identity |
+| VM right-click → Restore with hvbackup | modal: restore point, name, target connection (any vCenter or host hvbackup knows), host, datastore with free space, a network picker per source network, power on, new identity |
 
 Every hvbackup backup and restore also appears in vCenter's **Recent Tasks** on the
 VM, and posts an event (`net.onthenile.hvbackup.backup.done` / `.failed`) you
@@ -323,6 +362,26 @@ HVB_VSPHERE_USER_MAP=administrator@vsphere.local=admin,ops@corp.example=operator
 
 The plug-in pages talk to hvbackup through vCenter's reverse proxy, so the
 browser needs no direct route to the backup server; vCenter does.
+
+## Nexus Dashboard plug-ins
+
+Two plug-ins for [Nexus Dashboard](../NexusDashboard) 3.x ship in
+`plugins/nexusdash/`:
+
+- **`vm-backup`** (Python tier): native VM Backup and Backup History pages,
+  a front-page card, a `vm-backup` block in `/api/summary`, alerts (server
+  unreachable, failed backups, overdue VMs, offline proxies), history metrics
+  and Prometheus lines; admins get Back up now, Run now and Export OVA. It
+  talks to this server's REST API with one token kept in the dashboard
+  user's `~/.config/hvbackup/client.conf`, configured from its Settings
+  dialog. Works on any node that can reach the server.
+- **`hvbackup`** (declarative, one `plugin.yaml`, no code): service card,
+  status table and recent runs from the CLI, server journal, and the console
+  in an iframe. For nodes where a Python plug-in is not wanted.
+
+Install either by copying its directory to the dashboard's `plugins/` and
+restarting the dashboard; each has a README with the steps. Install one, not
+both.
 
 ## Troubleshooting
 
@@ -357,15 +416,15 @@ The catalog schema is created and extended automatically on start.
 ## Status and roadmap
 
 Working in this release: vCenter and standalone ESXi; full and incremental
-backups of running and powered-off VMs; restore as new VM; jobs, schedules,
-retention, GC; web UI, CLI, REST API with OpenAPI; native, deb and Docker
-installs.
+backups of running and powered-off VMs; restore as new VM, onto the source or
+any other connection (DR); OVF/OVA export; jobs, schedules, retention, GC; web
+UI, CLI, REST API with OpenAPI; vSphere Client plug-in; Nexus Dashboard
+plug-ins (declarative and Python tiers); native, deb and Docker installs.
 
-Planned: Proxmox VE provider (PVE 9 backup-provider API), vSphere Client
-plug-in for vCenter 8, Nexus Dashboard plug-in, cross-platform conversion
-(VMware ↔ Proxmox with guest driver fix-ups), Nexus SSO and OpenID Connect
-logins, encryption at rest, file-level restore. The design and the Phase 0
-measurements are in [PLAN.md](PLAN.md).
+Planned: Proxmox VE provider (PVE 9 backup-provider API), cross-platform
+conversion (VMware ↔ Proxmox with guest driver fix-ups), Nexus SSO and OpenID
+Connect logins, encryption at rest, file-level restore. The design and the
+Phase 0 measurements are in [PLAN.md](PLAN.md).
 
 ## Licence
 

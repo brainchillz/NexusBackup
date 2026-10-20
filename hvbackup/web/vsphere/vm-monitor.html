@@ -22,7 +22,7 @@ HVB.init(function (ctx) {
       document.getElementById('runs').innerHTML = v.runs.map(function (r) { return '<tr><td>' + HVB.fmtTime(r.started) + '</td><td>' + HVB.badge(r.status) + '</td><td>' + HVB.esc(r.kind || '') + '</td><td>' + HVB.esc(r.transport || '') + '</td><td>' + HVB.fmtBytes(r.bytes_read) + '</td><td class="muted">' + HVB.esc(r.error || '') + '</td></tr>'; }).join('') || '<tr><td colspan="6" class="muted">no runs yet</td></tr>';
     });
   }
-  function openRestore(rpId) { htmlClientSdk.modal.open({ url: 'restore.html', title: 'Restore from hvbackup', size: { width: 640, height: 520 }, contextObjects: ctx, customData: { rp: rpId }, onClosed: render }); }
+  function openRestore(rpId) { htmlClientSdk.modal.open({ url: 'restore.html', title: 'Restore from hvbackup', size: { width: 680, height: 640 }, contextObjects: ctx, customData: { rp: rpId }, onClosed: render }); }
   document.getElementById('rps').addEventListener('click', function (e) {
     var b = e.target.closest('button[data-rp]'); if (b) { openRestore(+b.dataset.rp); return; }
     var x = e.target.closest('button[data-export]'); if (!x) return;

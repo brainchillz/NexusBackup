@@ -18,6 +18,7 @@ MAX_LOG = 256 * 1024
 class Task:
     def __init__(self, task_id):
         self.id = task_id
+        self._last_progress = (0.0, None)  # (time, message) of the last progress row written
 
     def log(self, msg):
         line = time.strftime('%H:%M:%S ') + str(msg) + '\n'
@@ -28,6 +29,13 @@ class Task:
             c.execute('UPDATE tasks SET log=?, message=? WHERE id=?', (cur, str(msg)[:200], self.id))
 
     def progress(self, frac, message=None):
+        # Streams report progress per buffer (every 8 KiB for an HTTPS upload); a catalog
+        # transaction each time throttled restores to ~2 MiB/s. Write at most twice a second.
+        now = time.time()
+        last_t, last_msg = self._last_progress
+        if frac < 1 and now - last_t < 0.5 and (message is None or message == last_msg):
+            return
+        self._last_progress = (now, message if message is not None else last_msg)
         with db.conn() as c:
             if message is not None:
                 c.execute('UPDATE tasks SET progress=?, message=? WHERE id=?', (min(max(frac, 0), 1), message[:200], self.id))

@@ -202,6 +202,12 @@ def patch_connection(cid: int, body: ConnectionPatch, user=Depends(require('admi
 @r.delete('/connections/{cid}')
 def del_connection(cid: int, user=Depends(require('admin'))):
     with db.conn() as c:
+        n = c.execute('SELECT COUNT(*) FROM restore_points rp JOIN vms v ON v.id=rp.vm_id WHERE v.connection_id=? AND rp.deleted=0', (cid,)).fetchone()[0]
+        if n:
+            # The catalog hangs off the connection's VM rows. A dead vCenter can stay here
+            # unreachable for ever; its restore points are still restorable to any other target.
+            raise HTTPException(409, f'{n} restore points still belong to VMs of this connection; delete them first, or keep the '
+                                     'connection (it does not need to be reachable to restore from them elsewhere)')
         c.execute('DELETE FROM connections WHERE id=?', (cid,))
     db.audit(user['username'], 'connection_delete', str(cid))
     return {'ok': True}
@@ -411,6 +417,10 @@ def del_restore_point(rp_id: int, user=Depends(require('operator'))):
 
 
 class RestoreIn(BaseModel):
+    """Target of a restore. connection_id may be any connection, not only the one the backup
+    came from (DR to another vCenter or a standalone host). host/datastore/folder/networks
+    name things on that target; what is left unset is taken from the restore point and
+    remapped where the names do not exist there (see providers.vmware.resolve_target)."""
     name: Optional[str] = None
     power_on: bool = False
     new_identity: bool = True
@@ -418,7 +428,7 @@ class RestoreIn(BaseModel):
     host: Optional[str] = None
     datastore: Optional[str] = None
     folder: Optional[str] = None
-    networks: Optional[dict] = None
+    networks: Optional[dict[str, str]] = None
 
 
 @r.post('/restore-points/{rp_id}/restore')

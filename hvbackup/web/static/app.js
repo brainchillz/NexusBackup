@@ -224,35 +224,85 @@ function startedTask(res, what) {
   return id;
 }
 
-/* Restore dialog shared by the VM and restore-point pages. */
+/* Restore dialog shared by the VM and restore-point pages. The target may be any connection,
+   not only the one the backup came from (DR): host, datastore, folder and networks are read
+   from the chosen target and defaulted to the source's names where they exist there. */
 async function restoreDialog(rp, vmName, connectionId) {
   const conns = await api('GET', '/api/v1/connections');
   let detail = {};
   try { detail = await api('GET', `/api/v1/restore-points/${rp.id}`); } catch (e) { /* older point */ }
   const spec = detail.spec || {};
   const place = spec.placement || {};
-  const ds = (spec.disks && spec.disks[0] && spec.disks[0].datastore) || (place.datastores && place.datastores[0]) || '';
-  modal({
+  const srcDs = (spec.disks && spec.disks[0] && spec.disks[0].datastore) || (place.datastores && place.datastores[0]) || '';
+  const srcNets = [...new Set((spec.nics || []).map(n => n.network || ''))];
+  const need = rp.allocated_bytes || 0;
+  const m = modal({
     title: 'Restore ' + vmName,
-    body: `<p class="muted">Restore point ${esc(rp.id)} from ${esc(fmtTime(rp.created))} (${esc(rp.kind)}, ${esc(fmtBytes(rp.allocated_bytes))} allocated).</p>
+    body: `<p class="muted">Restore point ${esc(rp.id)} from ${esc(fmtTime(rp.created))} (${esc(rp.kind)}, ${esc(fmtBytes(rp.allocated_bytes))} allocated)${place.host ? `, taken on ${esc(place.host)} / ${esc(srcDs)}` : ''}.</p>
       <label class="f"><span>New VM name</span><input name="name" value="${esc(vmName + '-restored')}"></label>
       <div class="row">
-        <label class="f"><span>Target connection</span><select name="connection_id">${conns.map(c => `<option value="${c.id}" ${c.id === connectionId ? 'selected' : ''}>${esc(c.name)} (${esc(c.type)})</option>`).join('')}</select></label>
-        <label class="f"><span>Host</span><input name="host" value="${esc(place.host || '')}" placeholder="ESXi host name as vCenter shows it"></label>
-        <label class="f"><span>Datastore</span><input name="datastore" value="${esc(ds)}"></label>
+        <label class="f"><span>Target connection</span><select name="connection_id">${conns.filter(c => c.type !== 'proxmox').map(c => `<option value="${c.id}" ${c.id === connectionId ? 'selected' : ''}>${esc(c.name)} (${esc(c.type)})</option>`).join('')}</select></label>
+        <label class="f"><span>Host</span><select name="host"></select></label>
+        <label class="f"><span>Datastore</span><select name="datastore"></select></label>
       </div>
+      <div class="row"><label class="f"><span>VM folder</span><select name="folder"><option value="">(root VM folder)</option></select></label><div id="netmap" class="row" style="flex:2"></div></div>
+      <p class="muted" id="drnote" style="display:none"></p>
       <label class="c"><input type="checkbox" name="new_identity" checked> New identity (fresh MAC addresses and BIOS UUID). Untick only when the original VM is gone.</label>
       <label class="c"><input type="checkbox" name="power_on"> Power on after restore</label>
       <p class="muted">A restored copy keeps the guest's host name, host keys and DHCP client identity. Do not run it next to the original on the same network.</p>`,
     buttons: [{ label: 'Cancel' }, {
       label: 'Restore', cls: 'primary', onClick: async m => {
+        if (!m.querySelector('[name="host"]').value) throw new Error('pick a host on the target');
+        const networks = {};
+        srcNets.forEach((n, i) => { const e = m.querySelector(`[name="net${i}"]`); if (e && e.value) networks[n] = e.value; });
         const body = { name: val(m, 'name'), connection_id: Number(val(m, 'connection_id')), host: val(m, 'host') || null,
-          datastore: val(m, 'datastore') || null, new_identity: val(m, 'new_identity'), power_on: val(m, 'power_on') };
+          datastore: val(m, 'datastore') || null, folder: val(m, 'folder') || null, networks,
+          new_identity: val(m, 'new_identity'), power_on: val(m, 'power_on') };
         const res = await api('POST', `/api/v1/restore-points/${rp.id}/restore`, body);
         startedTask(res, 'Restore started');
       }
     }]
   });
+  const sel = n => m.querySelector(`[name="${n}"]`);
+  const errBox = m.querySelector('.err');
+  let placement = null;
+  function fillHost() {
+    const h = placement && placement.hosts.find(x => x.name === sel('host').value);
+    const info = (placement && placement.datastores) || {};
+    const dss = (h ? h.datastores : []).map(n => ({ name: n, ...(info[n] || {}) })).sort((a, b) => (b.free || 0) - (a.free || 0));
+    sel('datastore').innerHTML = dss.map(d => `<option value="${esc(d.name)}" ${d.accessible === false || (d.free != null && d.free < need) ? 'disabled' : ''}>${esc(d.name)}${d.free != null ? ` — ${esc(fmtBytes(d.free))} free` : ''}${d.accessible === false ? ' (inaccessible)' : d.free != null && d.free < need ? ' (too small)' : ''}</option>`).join('');
+    const srcOk = dss.find(d => d.name === srcDs && d.accessible !== false && !(d.free != null && d.free < need));
+    if (srcOk) sel('datastore').value = srcDs;
+    const nets = h ? h.networks : [];
+    m.querySelector('#netmap').innerHTML = srcNets.map((n, i) => {
+      const found = nets.includes(n);
+      const auto = !found && nets.length === 1;
+      return `<label class="f"><span>Network for ${esc(n || '(unknown)')}${found || auto ? '' : ' <b>— not on this host, choose</b>'}</span><select name="net${i}">${(found || auto ? '' : '<option value="">(choose)</option>') + nets.map(x => `<option value="${esc(x)}" ${x === n || auto ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>`;
+    }).join('');
+  }
+  async function loadPlacement() {
+    const cid = Number(sel('connection_id').value);
+    sel('host').innerHTML = '<option value="">loading…</option>'; sel('datastore').innerHTML = ''; m.querySelector('#netmap').innerHTML = '';
+    errBox.textContent = '';
+    try { placement = await api('GET', `/api/v1/connections/${cid}/placement`); }
+    catch (e) { placement = null; sel('host').innerHTML = ''; errBox.textContent = 'Cannot read the target: ' + e.message; return; }
+    const hosts = placement.hosts || [];
+    sel('host').innerHTML = hosts.map(h => {
+      const bad = (h.connection_state && h.connection_state !== 'connected') || h.maintenance;
+      return `<option value="${esc(h.name)}" ${bad ? 'disabled' : ''}>${esc(h.name)}${h.cluster ? ` (${esc(h.cluster)})` : ''}${h.maintenance ? ' — maintenance' : ''}${h.connection_state && h.connection_state !== 'connected' ? ` — ${esc(h.connection_state)}` : ''}</option>`;
+    }).join('');
+    const usable = hosts.filter(h => !((h.connection_state && h.connection_state !== 'connected') || h.maintenance));
+    const pick = (cid === connectionId && usable.find(h => h.name === place.host)) || usable.find(h => h.datastores.includes(srcDs)) || usable[0];
+    if (pick) sel('host').value = pick.name;
+    sel('folder').innerHTML = '<option value="">(root VM folder)</option>' + (placement.folders || []).map(f => `<option value="${esc(f.moref)}" ${cid === connectionId && f.moref === place.folder ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
+    const note = m.querySelector('#drnote');
+    note.style.display = cid === connectionId ? 'none' : '';
+    note.textContent = 'This is not the connection the backup came from. Only the repository is read; the source vCenter is not contacted. Check the host, datastore and networks the copy should use.';
+    fillHost();
+  }
+  sel('connection_id').onchange = loadPlacement;
+  sel('host').onchange = fillHost;
+  await loadPlacement();
 }
 
 /* Job editor shared by the Jobs page and the "Protect" flow on the VMs page. */

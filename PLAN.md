@@ -58,6 +58,23 @@ Next, in order:
    Installed and enabled on serenity, declarative `hvbackup` module disabled
    there (both would put a VM Backup page in the sidebar). The declarative
    tier stays as the zero-code option.
+1e. **Backups through a direct ESXi connection** (core requirement from §1,
+   never written down as a task, so never proven until 2026-10-20). Proven on
+   `lab-esxi-21` (192.168.35.21 added as its own connection, root) with
+   `matt-test1-dr`: full of the powered-off VM over datastore HTTPS with no
+   proxy (10 GiB read in 111 s, restore point 6; CBT enabled by the run,
+   snapshot through the host API); incremental on the powered-off VM (the
+   host answers the CBT query, 0 MiB read, point 7); then a proxy VM on the
+   host (`vmbackup-proxy-21`, 192.168.34.172, cloned from the vCenter proxy,
+   proxy record 2 created with connection 2): quiesced hot-add incremental of
+   the running VM (188 MiB in 10 s, point 8), a job on the connection
+   (`esxi21-nightly`, 02:00, keep 14; first run point 9), and a hot-add
+   restore of point 8 back onto the host (5.4 GiB in 17 s, deleted after).
+   Fixed on the way: an inventory refresh of another connection that sees
+   the same proxy VM (a host that is also in a vCenter) no longer re-ties a
+   proxy that was given its connection explicitly. Learned: a cloned proxy
+   must get a new machine-id and `dhcp-identifier: mac` before it touches
+   the network, or it takes the original's DHCP address (README).
 2. **Phase 2, vCenter plug-in, loose ends.** Built and registered (§8). Still
    to confirm visually in the vSphere Client: the Recent Tasks mirror, and a
    restore from the modal, now with the target picker.

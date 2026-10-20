@@ -95,7 +95,9 @@ def refresh_inventory(task, connection_id):
                 c.execute('UPDATE vms SET gone=1 WHERE id=?', (r['id'],))
         c.execute('UPDATE connections SET last_inventory=?, last_error=NULL, info_json=? WHERE id=?', (now, json.dumps(about), connection_id))
         # proxies that said hello but were never tied to a connection: find their VM here
-        for p in c.execute('SELECT id,bios_uuid FROM proxies WHERE bios_uuid IS NOT NULL AND (connection_id IS NULL OR vm_moref IS NULL)').fetchall():
+        # (a proxy given a connection explicitly keeps it: a host that is also managed by a vCenter shows the same VM twice)
+        for p in c.execute('SELECT id,bios_uuid FROM proxies WHERE bios_uuid IS NOT NULL AND (connection_id IS NULL OR (connection_id=? AND vm_moref IS NULL))',
+                           (connection_id,)).fetchall():
             for v in vms:
                 if uuids.same_vm(v['uuid'], p['bios_uuid']):
                     c.execute('UPDATE proxies SET connection_id=?, vm_moref=? WHERE id=?', (connection_id, v['moref'], p['id']))

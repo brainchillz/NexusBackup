@@ -110,6 +110,8 @@ owned by root.
    ```
 
    The proxy shows **online** in the UI within a minute. The server matches it to its VM by BIOS UUID on the next inventory refresh; you can also pick the connection when creating it.
+
+   Cloning an existing proxy VM is fine, but before its first boot on the network give the clone its own identity: a new `/etc/machine-id` (`rm /etc/machine-id; systemd-machine-id-setup`), fresh SSH host keys, and `dhcp-identifier: mac` in its netplan. Otherwise the clone presents the same DHCP identifier and takes the original's address. Create the clone's proxy record with its connection chosen, so a vCenter that also sees the host does not claim it.
 5. **VMs → Backup now** on one VM, or create a job under **Jobs**. Watch it under **Tasks**.
 
 For the CLI on any machine, create a token under **Settings → API tokens** and
@@ -266,6 +268,11 @@ standalone host usually calls itself `localhost.localdomain`.
 Proven in the lab on 2026-10-20: a restore point of a vCenter-managed VM
 restored through a direct connection to one of the ESXi hosts, booted, got
 an address.
+Backups through a direct ESXi connection are proven the same day: a full of a
+powered-off VM over datastore HTTPS with no proxy, an incremental with the
+host answering the CBT query, then with a proxy VM on that host a quiesced
+hot-add incremental of the running VM, a scheduled job on the connection,
+and a hot-add restore back onto the host.
 
 ### Garbage collection
 

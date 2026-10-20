@@ -247,6 +247,36 @@ removed, so a run in progress cannot lose data.
 The proxy only ever sees the server URL, its own token, and whatever disk the
 server attached to it. It cannot talk to vCenter.
 
+## Exporting a restore point as OVF/OVA
+
+Any restore point can be written out as a portable OVA (or an OVF folder). This is a
+**copy**: the restore point is not modified, stays in the catalog, stays restorable
+and remains the base of the next incremental. Make as many exports as you like and
+delete them freely.
+
+```bash
+hvbackup export <restore point id> --wait          # OVA under <repo>/exports/
+hvbackup export <restore point id> --format ovf    # folder with .ovf, .mf and .vmdk files
+hvbackup exports list
+hvbackup exports download <export id> --out vm.ova
+hvbackup exports delete <export id>
+```
+
+In the web UI: **Restore points → Export OVA**, then the Exports list on the same
+page offers Download. In the vSphere Client the Backups tab has the same button.
+
+What the export contains: one streamOptimized VMDK per disk (compressed, zero
+blocks omitted, so it is usually much smaller than the disk), an OVF descriptor
+built from the VM's recorded hardware (CPUs, memory, firmware, controllers,
+disks, NICs and their networks, guest OS type) and a SHA-256 manifest. The OVA
+imports into vSphere, Proxmox (`qm importovf`), VirtualBox and Workstation.
+Guest drivers are whatever the guest already has; cross-platform driver fix-ups
+are the conversion feature's job.
+
+Requires `qemu-img` (package `qemu-utils`) on the backup server. Temporary space
+equal to the allocated size of the largest disk is used under
+`<repo>/exports/` while converting.
+
 ## vSphere Client plug-in
 
 hvbackup registers itself with vCenter as a remote plug-in, so backups and restores

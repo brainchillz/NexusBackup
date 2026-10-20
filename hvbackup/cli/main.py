@@ -329,6 +329,33 @@ def cmd_tokens(args):
         out(args, c.call('DELETE', f'/tokens/{args.id}'))
 
 
+def cmd_export(args):
+    c = Client()
+    res = c.call('POST', f'/restore-points/{args.rp}/export', json={'format': args.format})
+    out(args, res)
+    if args.wait and not args.json:
+        t = wait_task(c, res['task_id'])
+        print(json.dumps(t.get('result', {}).get('result'), indent=2, default=str))
+
+
+def cmd_exports(args):
+    c = Client()
+    if args.action == 'list':
+        rows = c.call('GET', '/exports')
+        out(args, rows, [{**e, 'created': fmt_ts(e['created']), 'size': fmt_bytes(e['size_bytes'])} for e in rows], ['id', 'vm_name', 'restore_point_id', 'format', 'status', 'size', 'created', 'path', 'error'])
+    elif args.action == 'delete':
+        out(args, c.call('DELETE', f'/exports/{args.id}'))
+    elif args.action == 'download':
+        r = c.s.get(c.url + f'/api/v1/exports/{args.id}/download', stream=True, timeout=3600)
+        if r.status_code >= 400:
+            sys.exit(f'error {r.status_code}: {r.text[:200]}')
+        name = args.out or r.headers.get('content-disposition', 'export.ova').split('filename=')[-1].strip('"')
+        with open(name, 'wb') as f:
+            for blk in r.iter_content(8 * 2**20):
+                f.write(blk)
+        print(name)
+
+
 def cmd_vsphere_plugin(args):
     c = Client()
     out(args, c.call('POST', f'/connections/{args.connection}/vsphere-plugin', json={'action': args.action}, timeout=120))
@@ -370,6 +397,8 @@ def main(argv=None):
     p = sub.add_parser('users'); p.add_argument('action', choices=['list', 'add', 'passwd', 'delete']); p.add_argument('username', nargs='?'); p.add_argument('--password'); p.add_argument('--role', default='viewer'); p.set_defaults(fn=cmd_users)
     p = sub.add_parser('tokens'); p.add_argument('action', choices=['list', 'add', 'delete']); p.add_argument('name', nargs='?'); p.add_argument('--username'); p.add_argument('--id', type=int); p.set_defaults(fn=cmd_tokens)
     sub.add_parser('gc', help='run garbage collection now').set_defaults(fn=cmd_gc)
+    p = sub.add_parser('export', help='export a copy of a restore point as OVA/OVF (the backup is untouched)'); p.add_argument('rp', type=int); p.add_argument('--format', choices=['ova', 'ovf'], default='ova'); p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_export)
+    p = sub.add_parser('exports', help='list, download or delete exports'); p.add_argument('action', choices=['list', 'download', 'delete']); p.add_argument('id', nargs='?', type=int); p.add_argument('--out'); p.set_defaults(fn=cmd_exports)
     p = sub.add_parser('vsphere-plugin', help='register the vSphere Client plug-in on a vCenter connection'); p.add_argument('action', choices=['register', 'update', 'unregister', 'status']); p.add_argument('--connection', type=int, required=True); p.set_defaults(fn=cmd_vsphere_plugin)
 
     args = ap.parse_args(argv)

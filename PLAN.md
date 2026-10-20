@@ -24,15 +24,12 @@ Next, in order:
    datastores between source and target, handle a powered-off/unreachable
    source vCenter gracefully, and prove it on the lab's standalone ESXi
    (192.168.35.21) with a restore point taken from the vCenter cluster.
-1c. **Export a copy of a restore point as OVF/OVA.** Read-only: the restore point
-   is untouched and stays restorable; the OVA is an extra file. Button on a restore point (web UI
-   and plug-in): a task streams each disk from the chunk store through
-   `qemu-img convert -O vmdk -o subformat=streamOptimized`, writes the OVF
-   descriptor from the neutral spec and a SHA-256 manifest, tars them into an
-   OVA under `<repo>/exports/`, and offers a download link. Needs
-   `qemu-utils` on the server (recommended package). Importable into vSphere,
-   Proxmox, VirtualBox and Workstation; guest drivers are the conversion
-   phase's job.
+1c. **Export a copy of a restore point as OVF/OVA** (built 2026-10-20). Read-only
+   on the backup. `hvbackup export`, Export OVA buttons in the web UI and the
+   plug-in's Backups tab, exports catalogue with download and delete. Disks
+   go through `qemu-img convert -O vmdk -o subformat=streamOptimized`; OVF
+   descriptor and SHA-256 manifest are generated from the neutral spec; OVA
+   is a PAX tar. First export: matt-test1, 5.4 GiB allocated -> 2.2 GiB OVA.
 2. **Phase 2, vCenter plug-in.** Manifest, registration, Backup now and
    Restore on the VM menu, a VM tab with restore points, tasks mirrored into
    Recent Tasks. The UI pages already run inside an iframe; the session

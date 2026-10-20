@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS agent_work (
   id INTEGER PRIMARY KEY, proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,
   task_id INTEGER, kind TEXT NOT NULL, spec_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued',
   progress_bytes INTEGER DEFAULT 0, result_json TEXT, error TEXT, created REAL NOT NULL, taken REAL, finished REAL);
+CREATE TABLE IF NOT EXISTS exports (
+  id INTEGER PRIMARY KEY, restore_point_id INTEGER NOT NULL, vm_name TEXT NOT NULL, format TEXT NOT NULL,
+  path TEXT NOT NULL, size_bytes INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL, task_id INTEGER, status TEXT NOT NULL, error TEXT);
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, user TEXT, action TEXT NOT NULL, detail TEXT);
 CREATE INDEX IF NOT EXISTS idx_runs_vm ON runs(vm_id, started);

@@ -45,6 +45,7 @@ CONF
     systemctl daemon-reload
     systemctl enable hvbackup >/dev/null
     systemctl restart hvbackup
+    if command -v apt-get >/dev/null && ! command -v qemu-img >/dev/null; then apt-get install -y -q qemu-utils >/dev/null 2>&1 || echo "note: install qemu-utils to enable OVA export"; fi
     echo "==> server installed. Next:"
     echo "    sudo -u hvbackup HVB_CONFIG=/etc/hvbackup/hvbackup.conf $PREFIX/venv/bin/hvbackup init-admin admin"
     echo "    open https://$(hostname -f):8460"

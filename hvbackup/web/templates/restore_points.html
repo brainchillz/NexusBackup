@@ -2,6 +2,8 @@
 {% block content %}
 <div class="toolbar"><select id="vm"><option value="">All VMs</option></select><span class="muted">Every restore point is a complete image: restoring never needs the chain of earlier ones.</span></div>
 <div class="card"><div id="list"></div></div>
+<h3 class="section-title" style="margin-top:18px">Exports <span class="muted" style="font-weight:400">OVF/OVA copies made from restore points. Making one never changes the backup.</span></h3>
+<div class="card"><div id="exports"></div></div>
 {% endblock %}
 {% block script %}
 <script>
@@ -18,10 +20,25 @@ document.addEventListener('DOMContentLoaded', () => {
       { h: 'Kind', f: r => esc(r.kind) },
       { h: 'Disk size', f: r => esc(fmtBytes(r.size_bytes)), cls: 'num' },
       { h: 'Allocated', f: r => esc(fmtBytes(r.allocated_bytes)), cls: 'num' },
-      { h: '', f: r => (can('restore') ? `<button class="btn sm primary" data-a="restore" data-id="${r.id}">Restore…</button> ` : '') + (can('operator') ? `<button class="btn sm danger" data-a="del" data-id="${r.id}">Delete</button>` : '') },
+      { h: '', f: r => (can('restore') ? `<button class="btn sm primary" data-a="restore" data-id="${r.id}">Restore…</button> <button class="btn sm" data-a="export" data-id="${r.id}" title="Write an OVA copy of this restore point; the backup is untouched">Export OVA</button> ` : '') + (can('operator') ? `<button class="btn sm danger" data-a="del" data-id="${r.id}">Delete</button>` : '') },
     ], rows, 'No restore points yet.');
   }
+  let exps = [];
+  function drawExports() {
+    renderTable(document.getElementById('exports'), [
+      { h: 'ID', f: e => esc(e.id), cls: 'num' },
+      { h: 'VM', f: e => esc(e.vm_name) },
+      { h: 'Restore point', f: e => esc(e.restore_point_id), cls: 'num' },
+      { h: 'Format', f: e => esc(e.format) },
+      { h: 'Status', f: e => badge(e.status) + (e.error ? ` <span class="muted">${esc(e.error)}</span>` : '') },
+      { h: 'Size', f: e => esc(fmtBytes(e.size_bytes)), cls: 'num' },
+      { h: 'Created', f: e => esc(fmtTime(e.created)) },
+      { h: 'Location', f: e => `<code>${esc(e.path)}</code>` },
+      { h: '', f: e => (e.status === 'done' && e.format === 'ova' ? `<a class="btn sm primary" href="/api/v1/exports/${e.id}/download">Download</a> ` : '') + (e.task_id ? `<a class="btn sm" href="/tasks/${e.task_id}">Task</a> ` : '') + (can('operator') ? `<button class="btn sm danger" data-x="del" data-id="${e.id}">Delete</button>` : '') },
+    ], exps, 'No exports yet. Use Export OVA on a restore point.');
+  }
   async function load() {
+    exps = await api('GET', '/api/v1/exports'); drawExports();
     rps = await api('GET', '/api/v1/restore-points');
     const names = new Map(rps.map(r => [r.vm_id, r.vm_name]));
     const cur = vmSel.value;
@@ -31,10 +48,16 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   pollWhile(load, 15000);
   vmSel.oninput = draw;
+  document.getElementById('exports').addEventListener('click', e => {
+    const b = e.target.closest('button[data-x]'); if (!b) return;
+    const ex = exps.find(x => String(x.id) === b.dataset.id);
+    confirmModal('Delete export', `Delete export ${ex.id} (${ex.vm_name}, ${fmtBytes(ex.size_bytes)})? The restore point it was made from is not affected.`, async () => { await api('DELETE', `/api/v1/exports/${ex.id}`); load(); }, 'danger');
+  });
   el.addEventListener('click', e => {
     const b = e.target.closest('button[data-a]'); if (!b) return;
     const rp = rps.find(r => String(r.id) === b.dataset.id);
     if (b.dataset.a === 'restore') restoreDialog(rp, rp.vm_name, rp.connection_id);
+    if (b.dataset.a === 'export') confirmModal('Export OVA', `Write an OVA copy of restore point ${rp.id} of ${rp.vm_name} (${fmtBytes(rp.allocated_bytes)} of data) into the repository's exports folder? The restore point itself is not changed.`, async () => { const r = await api('POST', `/api/v1/restore-points/${rp.id}/export`, { format: 'ova' }); startedTask(r.task_id); load(); });
     if (b.dataset.a === 'del') confirmModal('Delete restore point', `Delete restore point ${rp.id} of ${rp.vm_name}? If it is the newest, the next backup is a full. Space is reclaimed by the nightly garbage collection.`, async () => { await api('DELETE', `/api/v1/restore-points/${rp.id}`); load(); }, 'danger');
   });
 });

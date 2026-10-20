@@ -6,6 +6,7 @@
   <h2 id="title">Backups</h2>
   <div class="actions" style="justify-content:flex-start;margin:0 0 10px"><button class="primary" id="backup">Back up now</button><button id="restore">Restore…</button></div>
   <h3>Restore points</h3><table><thead><tr><th>Created</th><th>Kind</th><th>Size</th><th>Allocated</th><th></th></tr></thead><tbody id="rps"></tbody></table>
+  <p class="muted" id="exportnote" style="display:none">Export OVA writes a copy of a restore point into the backup server's exports folder; download it from the hvbackup console (Restore points page). The backup is not changed.</p>
   <h3>Runs</h3><table><thead><tr><th>Started</th><th>Status</th><th>Kind</th><th>Transport</th><th>Read</th><th>Error</th></tr></thead><tbody id="runs"></tbody></table>
 </div>
 <script>
@@ -17,12 +18,19 @@ HVB.init(function (ctx) {
       document.getElementById('title').textContent = 'Backups of ' + v.name;
       var canRestore = HVB.user && /restore|operator|admin/.test(HVB.user.role), canOp = HVB.user && /operator|admin/.test(HVB.user.role);
       document.getElementById('backup').style.display = canOp ? '' : 'none'; document.getElementById('restore').style.display = canRestore && v.restore_points.length ? '' : 'none';
-      document.getElementById('rps').innerHTML = v.restore_points.map(function (rp) { return '<tr><td>' + HVB.fmtTime(rp.created) + '</td><td>' + HVB.esc(rp.kind) + '</td><td>' + HVB.fmtBytes(rp.size_bytes) + '</td><td>' + HVB.fmtBytes(rp.allocated_bytes) + '</td><td>' + (canRestore ? '<button data-rp="' + rp.id + '">Restore…</button>' : '') + '</td></tr>'; }).join('') || '<tr><td colspan="5" class="muted">no restore points yet</td></tr>';
+      document.getElementById('rps').innerHTML = v.restore_points.map(function (rp) { return '<tr><td>' + HVB.fmtTime(rp.created) + '</td><td>' + HVB.esc(rp.kind) + '</td><td>' + HVB.fmtBytes(rp.size_bytes) + '</td><td>' + HVB.fmtBytes(rp.allocated_bytes) + '</td><td>' + (canRestore ? '<button data-rp="' + rp.id + '">Restore…</button> <button data-export="' + rp.id + '">Export OVA</button>' : '') + '</td></tr>'; }).join('') || '<tr><td colspan="5" class="muted">no restore points yet</td></tr>';
       document.getElementById('runs').innerHTML = v.runs.map(function (r) { return '<tr><td>' + HVB.fmtTime(r.started) + '</td><td>' + HVB.badge(r.status) + '</td><td>' + HVB.esc(r.kind || '') + '</td><td>' + HVB.esc(r.transport || '') + '</td><td>' + HVB.fmtBytes(r.bytes_read) + '</td><td class="muted">' + HVB.esc(r.error || '') + '</td></tr>'; }).join('') || '<tr><td colspan="6" class="muted">no runs yet</td></tr>';
     });
   }
   function openRestore(rpId) { htmlClientSdk.modal.open({ url: 'restore.html', title: 'Restore from hvbackup', size: { width: 640, height: 520 }, contextObjects: ctx, customData: { rp: rpId }, onClosed: render }); }
-  document.getElementById('rps').addEventListener('click', function (e) { var b = e.target.closest('button[data-rp]'); if (b) openRestore(+b.dataset.rp); });
+  document.getElementById('rps').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-rp]'); if (b) { openRestore(+b.dataset.rp); return; }
+    var x = e.target.closest('button[data-export]'); if (!x) return;
+    x.disabled = true; x.textContent = 'Exporting…'; document.getElementById('exportnote').style.display = '';
+    HVB.api('POST', '/restore-points/' + x.dataset.export + '/export', { format: 'ova' }).then(function (d) {
+      HVB.pollTask(d.task_id, function (t) { x.textContent = t.state === 'done' ? 'Exported' : (t.state === 'running' ? 'Exporting ' + Math.round(t.progress * 100) + '%' : t.state); if (t.state !== 'running' && t.state !== 'queued') { x.disabled = false; } });
+    }).catch(function (e) { x.disabled = false; x.textContent = 'Export OVA'; alert(e.message); });
+  });
   document.getElementById('restore').onclick = function () { openRestore(null); };
   document.getElementById('backup').onclick = function () { var b = this; b.disabled = true; HVB.api('POST', '/vms/' + vm.id + '/backup', { quiesce: true }).then(function () { b.textContent = 'Backup started'; setTimeout(function () { b.disabled = false; b.textContent = 'Back up now'; render(); }, 4000); }).catch(function (e) { b.disabled = false; alert(e.message); }); };
   HVB.resolve(ctx[0]).then(function (v) { vm = v; render(); setInterval(render, 5000); }).catch(function (e) { HVB.fail(e.message); });

@@ -1,5 +1,5 @@
 FROM python:3.12-slim
-RUN mkdir -p /var/lib/hvbackup /etc/hvbackup
+RUN apt-get update -q && apt-get install -y -q --no-install-recommends qemu-utils && rm -rf /var/lib/apt/lists/* && mkdir -p /var/lib/hvbackup /etc/hvbackup
 COPY pyproject.toml README.md /src/
 COPY hvbackup /src/hvbackup
 RUN pip install --no-cache-dir /src && rm -rf /src

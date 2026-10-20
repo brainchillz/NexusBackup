@@ -292,6 +292,8 @@ def restore(task, restore_point_id, options):
 
 
 def register_tasks():
+    from . import export as export_mod
+    tasks.register('export', export_mod.export_restore_point)
     tasks.register('inventory', refresh_inventory)
     tasks.register('backup_job', backup_job)
     tasks.register('backup_vm', backup_vm)

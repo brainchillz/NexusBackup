@@ -1,6 +1,7 @@
 """REST API, versioned under /api/v1. Every mutating call returns a task id or the
 changed object; the UI and CLI are plain clients of these routes."""
 import json
+import os
 import time
 from typing import Optional
 
@@ -425,6 +426,51 @@ def restore(rp_id: int, body: RestoreIn, user=Depends(require('restore'))):
     db.audit(user['username'], 'restore', f'{rp_id} -> {body.name}')
     return {'task_id': tasks.create('restore', subject=body.name or f'rp {rp_id}', created_by=user['username'],
                                     restore_point_id=rp_id, options=body.model_dump())}
+
+
+# ── exports (OVF/OVA copies of restore points; read-only on the backup) ──
+class ExportIn(BaseModel):
+    format: str = Field(default='ova', pattern='^(ova|ovf)$')
+
+
+@r.post('/restore-points/{rp_id}/export')
+def export_rp(rp_id: int, body: ExportIn = ExportIn(), user=Depends(require('restore'))):
+    with db.conn() as c:
+        rp = c.execute('SELECT id, vm_id FROM restore_points WHERE id=? AND deleted=0', (rp_id,)).fetchone()
+        if not rp:
+            raise HTTPException(404)
+        vm = c.execute('SELECT name FROM vms WHERE id=?', (rp['vm_id'],)).fetchone()
+    db.audit(user['username'], 'export', f'{rp_id} {body.format}')
+    return {'task_id': tasks.create('export', subject=f'{vm["name"]} rp {rp_id} -> {body.format}', created_by=user['username'],
+                                    restore_point_id=rp_id, fmt=body.format)}
+
+
+@r.get('/exports')
+def exports(user=Depends(current_user)):
+    with db.conn() as c:
+        return _rows(c, 'SELECT * FROM exports ORDER BY id DESC')
+
+
+@r.get('/exports/{eid}/download')
+def download_export(eid: int, user=Depends(current_user)):
+    from fastapi.responses import FileResponse
+    with db.conn() as c:
+        e = db.row_to_dict(c.execute("SELECT * FROM exports WHERE id=? AND status='done'", (eid,)).fetchone())
+    if not e or e['format'] != 'ova':
+        raise HTTPException(404, 'no downloadable OVA for this export (OVF folders are read on the server)')
+    p = os.path.join(repo().path, e['path'])
+    if not os.path.exists(p):
+        raise HTTPException(404, 'export file missing')
+    db.audit(user['username'], 'export_download', str(eid))
+    return FileResponse(p, media_type='application/x-tar', filename=os.path.basename(p))
+
+
+@r.delete('/exports/{eid}')
+def delete_export(eid: int, user=Depends(require('operator'))):
+    from ..core import export as export_mod
+    export_mod.delete_export(eid)
+    db.audit(user['username'], 'export_delete', str(eid))
+    return {'ok': True}
 
 
 # ── proxies ──────────────────────────────────────────────────────────

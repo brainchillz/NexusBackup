@@ -28,5 +28,7 @@ token, which can only read.
   `json_lines` parser takes one object per line, so this widget shows rows only on
   dashboards that accept a JSON array as well. If yours does not, drop the widget;
   the Status table and the iframe carry the same information.
-- The Python-tier plug-in (summary block, alerts for failed or overdue backups,
-  history metrics, Backup-now actions) is planned; see PLAN.md §4.
+- The Python-tier plug-in lives next door in `../vm-backup/`: native pages,
+  front-page card, summary block, alerts for failed or overdue backups and
+  offline proxies, history metrics, Back up now / Run now / Export OVA. Prefer
+  it where a Python plug-in is acceptable; install one or the other, not both.

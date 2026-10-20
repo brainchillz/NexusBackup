@@ -32,6 +32,14 @@ Next, in order:
    is a PAX tar. Verified: matt-test1 restore point (5.4 GiB allocated) ->
    2.2 GiB OVA, imported back into vCenter with `govc import.ova`, booted,
    got an IP; the source restore point untouched.
+1d. **Nexus Dashboard Python-tier plug-in** (promoted 2026-10-20, right after the
+   vSphere block). Replaces the iframe-based declarative page on the node that
+   runs hvbackup with a native module: pages rendered by the dashboard's own
+   tables and cards from the hvbackup API (inventory with protection state,
+   jobs, runs, restore points), admin actions (Backup now, Run job, Export
+   OVA), a `/api/summary` block, alerts for failed runs, offline proxies and
+   overdue backups, history metrics (bytes protected, repository usage), and a
+   front-page card. The declarative tier stays as the zero-code option.
 2. **Phase 2, vCenter plug-in.** Manifest, registration, Backup now and
    Restore on the VM menu, a VM tab with restore points, tasks mirrored into
    Recent Tasks. The UI pages already run inside an iframe; the session
@@ -45,7 +53,6 @@ Next, in order:
 5. **Phase 5, conversion.** virt-v2v in place for VMware to Proxmox, our own
    fixup module for the reverse, KVM test boot on serenity (needs the
    libguestfs tool set installed there).
-6. **Dashboard Python tier**, alongside whichever phase is running.
 
 Open decisions for the owner: which real VMs join the nightly job during the
 soak; whether Proxmox (3) should come before the vCenter plug-in (2).

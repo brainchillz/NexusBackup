@@ -306,6 +306,8 @@ def register_tasks():
     tasks.register('backup_vm', backup_vm)
     tasks.register('restore', restore)
     tasks.register('gc', gc)
+    from . import proxy_deploy
+    tasks.register('deploy_proxy', proxy_deploy.deploy_proxy)
 
 
 def scheduler_run_job(job_id, created_by):

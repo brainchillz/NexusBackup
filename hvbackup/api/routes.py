@@ -3,6 +3,7 @@ changed object; the UI and CLI are plain clients of these routes."""
 import json
 import os
 import time
+from urllib.parse import urlparse
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -492,11 +493,56 @@ class ProxyIn(BaseModel):
 @r.get('/proxies')
 def proxies(user=Depends(current_user)):
     with db.conn() as c:
-        out = _rows(c, 'SELECT p.id,p.name,p.connection_id,p.vm_moref,p.bios_uuid,p.prefix,p.created,p.last_seen,p.version,p.address,p.enabled, c.name AS connection_name FROM proxies p LEFT JOIN connections c ON c.id=p.connection_id ORDER BY p.name')
+        out = _rows(c, 'SELECT p.id,p.name,p.connection_id,p.vm_moref,p.bios_uuid,p.prefix,p.created,p.last_seen,p.version,p.address,p.enabled,'
+                       ' p.deploy_task_id,p.vm_name, c.name AS connection_name, t.state AS deploy_state'
+                       ' FROM proxies p LEFT JOIN connections c ON c.id=p.connection_id LEFT JOIN tasks t ON t.id=p.deploy_task_id ORDER BY p.name')
     now = time.time()
     for o in out:
         o['online'] = bool(o['last_seen'] and now - o['last_seen'] < ops.PROXY_FRESH)
     return out
+
+
+class ProxyDeployIn(BaseModel):
+    """Deploy a proxy VM from the stock cloud image onto a vSphere connection. Unset host,
+    datastore, folder and network are chosen like a restore target: one sensible candidate
+    is used, several are refused with the list. The server URL is what the proxy calls back
+    to; it defaults to HVB_URL or the URL this request came in on."""
+    name: str = Field(pattern=r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$')
+    connection_id: int
+    host: Optional[str] = None
+    datastore: Optional[str] = None
+    folder: Optional[str] = None
+    network: Optional[str] = None
+    cpus: int = Field(default=2, ge=1, le=32)
+    memory_mb: int = Field(default=2048, ge=1024, le=131072)
+    ssh_key: Optional[str] = None
+    server_url: Optional[str] = None
+    timeout_minutes: int = Field(default=20, ge=3, le=180)
+
+
+@r.post('/proxies/deploy')
+def deploy_proxy(body: ProxyDeployIn, request: Request, user=Depends(require('admin'))):
+    cr = ops.connection(body.connection_id)
+    if cr['type'] not in ('vcenter', 'esxi'):
+        raise HTTPException(400, f'proxy VMs are deployed on vSphere connections, not {cr["type"]}')
+    url = (body.server_url or config.PUBLIC_URL or str(request.base_url)).rstrip('/')
+    hostpart = (urlparse(url).hostname or '').lower()
+    if hostpart in ('', 'localhost', '127.0.0.1', '::1'):
+        raise HTTPException(400, 'the proxy must reach this server by a routable address: set HVB_URL in hvbackup.conf or pass server_url')
+    with db.conn() as c:
+        if c.execute('SELECT 1 FROM proxies WHERE name=?', (body.name,)).fetchone():
+            raise HTTPException(409, f'a proxy named {body.name!r} already exists')
+    opts = body.model_dump()
+    opts['server_url'] = url
+    db.audit(user['username'], 'proxy_deploy', f'{body.name} on {cr["name"]}')
+    return {'task_id': tasks.create('deploy_proxy', subject=body.name, created_by=user['username'], options=opts)}
+
+
+@r.get('/proxies/image')
+def proxy_image(user=Depends(current_user)):
+    """The cloud image proxy VMs are deployed from and whether it is already cached."""
+    from ..core import proxy_deploy
+    return proxy_deploy.image_status()
 
 
 @r.post('/proxies', status_code=201)

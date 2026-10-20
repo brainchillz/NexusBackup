@@ -13,6 +13,13 @@ from .deps import current_proxy
 r = APIRouter(prefix='/api/v1/agent')
 
 
+@r.get('/files/proxy_agent.py', include_in_schema=False)
+def agent_source():
+    """The agent program itself (no secrets): a proxy VM deployed from this server fetches it at first boot."""
+    from ..agent import proxy_agent
+    return FileResponse(proxy_agent.__file__, media_type='text/x-python', filename='proxy_agent.py')
+
+
 @r.post('/hello')
 async def hello(request: Request, proxy=Depends(current_proxy)):
     body = await request.json()

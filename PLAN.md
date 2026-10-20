@@ -14,9 +14,28 @@ Next, in order:
 
 1. **Soak and harden, two weeks.** Let the nightly job run, add real VMs once
    comfortable, one test restore a week, fix what the logs show. Known items:
-   a dedicated least-privilege vCenter role instead of administrator;
-   server-driven proxy deployment so a new cluster needs no manual agent
-   install.
+   a dedicated least-privilege vCenter role instead of administrator.
+1f. **Proxy VM deployed from the UI** (built 2026-10-20). Proxies → Deploy
+   proxy VM, `POST /proxies/deploy`, `hvbackup proxies deploy`. The server
+   fetches the Ubuntu 24.04 cloud OVA once (SHA256 from the publisher's
+   SHA256SUMS, cached in `HVB_DATA_DIR/images`; `HVB_PROXY_IMAGE_URL` /
+   `HVB_PROXY_IMAGE` for mirrors and offline sites), imports it through
+   OvfManager + HttpNfcLease onto the chosen host/datastore/network (same
+   picker and resolver as restores), sets CPU/memory and the guestInfo OVF
+   transport, and passes cloud-init user-data in the OVA's `user-data`
+   property: agent.conf with the proxy token, the systemd unit, and a
+   bootstrap that makes a venv, pip-installs the agent's four deps and
+   fetches `proxy_agent.py` from the server itself
+   (`/api/v1/agent/files/proxy_agent.py`, unauthenticated, no secrets). The
+   task powers the VM on, waits for the agent's hello (default 20 min,
+   logging tools state and guest IP), ties moref and BIOS UUID at once, then
+   blanks the secret-bearing OVF properties. A failure before the VM exists
+   removes the proxy record; after, the VM is left for inspection with the
+   log paths in the error. Proxies rows carry `deploy_task_id`/`vm_name`,
+   the UI shows "deploying…" linked to the task. Proven on lab-vcenter:
+   `proxy-deskmeat` on host .20, 64 s from task start to agent online (22 s
+   download, 11 s upload, 30 s boot and bootstrap), properties blanked, and
+   a hot-add incremental of gitlab-runner-01 went through it.
 1b. **Restore to a different target (DR case)** (built 2026-10-20). Any
    connection can be the target. `providers.vmware.resolve_target` remaps
    host, datastore, folder and networks: one sensible candidate is taken and

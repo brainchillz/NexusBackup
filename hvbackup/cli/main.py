@@ -16,7 +16,7 @@ Client side (any machine; HVB_URL + HVB_TOKEN, or ~/.config/hvbackup/client.conf
   hvbackup restore <rp> --name NAME [--connection C] [--host H] [--datastore DS] [--network SRC=DST]... [--power-on] [--keep-identity] [--wait]
   hvbackup connections placement <id|name>      hosts, datastores and networks to restore onto
   hvbackup tasks list|show|wait|cancel
-  hvbackup proxies list|add <name>
+  hvbackup proxies list|add <name>|deploy <name> --connection <id|name> [...]|image
   hvbackup users list|add|passwd ; hvbackup tokens list|add|delete
   hvbackup gc
 Every command accepts --json for raw API output.
@@ -329,10 +329,28 @@ def cmd_proxies(args):
         rows = c.call('GET', '/proxies')
         out(args, rows, [{**p, 'last_seen': fmt_ts(p['last_seen'])} for p in rows], ['id', 'name', 'connection_name', 'online', 'address', 'version', 'last_seen'])
     elif args.action == 'add':
-        res = c.call('POST', '/proxies', json={'name': args.name, 'connection_id': args.connection})
+        res = c.call('POST', '/proxies', json={'name': args.name, 'connection_id': resolve_connection(c, args.connection)})
         out(args, res)
         if not args.json:
             print(f'\n/etc/hvbackup/agent.conf on the proxy VM:\nHVB_URL={c.url}\nHVB_PROXY_TOKEN={res["token"]}\nHVB_INSECURE=1')
+    elif args.action == 'deploy':
+        if not args.name or not args.connection:
+            raise SystemExit('usage: hvbackup proxies deploy <name> --connection <id|name> [--host H --datastore DS --network NET --folder MOREF --cpus N --memory MB --ssh-key-file FILE --url URL --wait]')
+        body = {'name': args.name, 'connection_id': resolve_connection(c, args.connection), 'host': args.host, 'datastore': args.datastore,
+                'folder': args.folder, 'network': args.network, 'cpus': args.cpus, 'memory_mb': args.memory, 'timeout_minutes': args.timeout}
+        if args.ssh_key_file:
+            body['ssh_key'] = open(args.ssh_key_file).read().strip()
+        if args.url:
+            body['server_url'] = args.url
+        elif not c.url.startswith(('https://127.0.0.1', 'https://localhost', 'http://127.0.0.1', 'http://localhost')):
+            body['server_url'] = c.url
+        res = c.call('POST', '/proxies/deploy', json=body)
+        out(args, res)
+        if args.wait and not args.json:
+            t = wait_task(c, res['task_id'])
+            print(json.dumps(t.get('result', {}).get('result'), indent=2, default=str))
+    elif args.action == 'image':
+        out(args, c.call('GET', '/proxies/image'))
     elif args.action == 'delete':
         out(args, c.call('DELETE', f'/proxies/{args.id}'))
 
@@ -430,7 +448,12 @@ def main(argv=None):
     p.add_argument('--network', action='append', metavar='SOURCE=TARGET', help='map a source network to one on the target (repeatable)')
     p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_restore)
     p = sub.add_parser('tasks'); p.add_argument('action', choices=['list', 'show', 'wait', 'cancel']); p.add_argument('id', nargs='?', type=int); p.add_argument('--limit', type=int, default=30); p.set_defaults(fn=cmd_tasks)
-    p = sub.add_parser('proxies'); p.add_argument('action', choices=['list', 'add', 'delete']); p.add_argument('name', nargs='?'); p.add_argument('--connection', type=int); p.set_defaults(fn=cmd_proxies)
+    p = sub.add_parser('proxies', help='proxy VMs: list, add (register one you install yourself), deploy (the server builds one), image, delete')
+    p.add_argument('action', choices=['list', 'add', 'deploy', 'image', 'delete']); p.add_argument('name', nargs='?'); p.add_argument('--connection', help='id or name')
+    p.add_argument('--host'); p.add_argument('--datastore'); p.add_argument('--folder', help='VM folder moref'); p.add_argument('--network')
+    p.add_argument('--cpus', type=int, default=2); p.add_argument('--memory', type=int, default=2048, help='MiB'); p.add_argument('--ssh-key-file', help='public key for the ubuntu user')
+    p.add_argument('--url', help='URL the proxy calls the server on (default: HVB_URL of the server, else this client\'s URL)'); p.add_argument('--timeout', type=int, default=20, help='minutes to wait for the agent')
+    p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_proxies)
     p = sub.add_parser('users'); p.add_argument('action', choices=['list', 'add', 'passwd', 'delete']); p.add_argument('username', nargs='?'); p.add_argument('--password'); p.add_argument('--role', default='viewer'); p.set_defaults(fn=cmd_users)
     p = sub.add_parser('tokens'); p.add_argument('action', choices=['list', 'add', 'delete']); p.add_argument('name', nargs='?'); p.add_argument('--username'); p.add_argument('--id', type=int); p.set_defaults(fn=cmd_tokens)
     sub.add_parser('gc', help='run garbage collection now').set_defaults(fn=cmd_gc)

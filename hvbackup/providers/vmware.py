@@ -807,3 +807,142 @@ def _write_via_https(task, api, host, descriptor, size, hashes, cs, prog):
                      cookies={'vmware_cgi_ticket': api.ticket('httpPut', url)}, verify=False, timeout=24 * 3600)
     if r.status_code not in (200, 201):
         raise RuntimeError(f'upload failed: HTTP {r.status_code}')
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# proxy VM deployment (OVA import through OvfManager + HttpNfcLease)
+# ═══════════════════════════════════════════════════════════════════════
+class _CountingReader:
+    """File-like wrapper that reports upload progress and honours task cancellation."""
+
+    def __init__(self, f, size, prog, task):
+        self.f, self.size, self.prog, self.task, self.done = f, size, prog, task, 0
+
+    def __len__(self):
+        return self.size
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = 1 << 20
+        buf = self.f.read(n)
+        self.done += len(buf)
+        if self.done % (16 << 20) < len(buf) or not buf:
+            self.prog(self.done)
+            self.task.check_cancel()
+        return buf
+
+
+def deploy_ova(task, api: VMware, ova_path, name, target, properties, cpus, memory_mb, annotation=''):
+    """Import an OVA onto this connection and return the new VM (powered off). `target` is a
+    resolve_target() result; `properties` are OVF (vApp) property values keyed by ovf:key.
+    All OVF networks are mapped to the single target network. Disks are thin."""
+    import re
+    import tarfile
+    host, ds, folder, pool = target['host'], target['datastore'], target['folder'], target['pool']
+    net = next(iter(target['networks'].values()), None)
+    tar = tarfile.open(ova_path)
+    members = {m.name: m for m in tar.getmembers()}
+    ovf_name = next((n for n in members if n.lower().endswith('.ovf')), None)
+    if not ovf_name:
+        raise RuntimeError(f'{ova_path} has no .ovf descriptor')
+    ovf = tar.extractfile(members[ovf_name]).read().decode('utf-8')
+    ovf_nets = re.findall(r'<Network\s+ovf:name="([^"]+)"', ovf) or ['VM Network']
+    known = set(re.findall(r'<Property[^>]*ovf:key="([^"]+)"', ovf))
+    props = [vim.KeyValue(key=k, value=v) for k, v in properties.items() if k in known]
+    missing = [k for k in properties if k not in known]
+    if missing:
+        task.log(f'WARNING: the image has no OVF properties {missing}; cloud-init will not see them')
+    cisp = vim.OvfManager.CreateImportSpecParams(
+        entityName=name, hostSystem=host, diskProvisioning='thin',
+        networkMapping=[vim.OvfManager.NetworkMapping(name=n, network=net) for n in ovf_nets] if net is not None else [],
+        propertyMapping=props)
+    spec = api.content.ovfManager.CreateImportSpec(ovf, pool, ds, cisp)
+    if spec.error:
+        raise RuntimeError('OVF import spec: ' + '; '.join(e.msg for e in spec.error))
+    for w in spec.warning or []:
+        task.log(f'OVF warning: {w.msg}')
+    lease = pool.ImportVApp(spec.importSpec, folder, host)
+    while lease.state == vim.HttpNfcLease.State.initializing:
+        time.sleep(0.5)
+    if lease.state != vim.HttpNfcLease.State.ready:
+        raise RuntimeError(f'import lease failed: {lease.error.msg if lease.error else lease.state}')
+    http = api.http_host(host)
+    files = []
+    for fi in spec.fileItem:
+        m = members.get(fi.path) or next((mm for n, mm in members.items() if n.endswith('/' + fi.path)), None)
+        if m is None:
+            lease.HttpNfcLeaseAbort()
+            raise RuntimeError(f'{ova_path} has no member {fi.path!r} named by the descriptor')
+        du = next((d for d in lease.info.deviceUrl if d.importKey == fi.deviceId), None)
+        if du is None:
+            lease.HttpNfcLeaseAbort()
+            raise RuntimeError(f'no upload URL for {fi.path}')
+        files.append((fi, m, du.url.replace('*', http)))
+    total = sum(m.size for _, m, _ in files) or 1
+    sent = [0]
+    stop = threading.Event()
+
+    def keepalive():
+        while not stop.wait(15):
+            try:
+                lease.HttpNfcLeaseProgress(min(99, int(sent[0] * 100 / total)))
+            except Exception:  # noqa: BLE001
+                return
+
+    th = threading.Thread(target=keepalive, name='lease-keepalive', daemon=True)
+    th.start()
+    try:
+        for fi, m, url in files:
+            task.log(f'uploading {fi.path} ({m.size / 2**20:.0f} MiB) to {http}')
+            base_done = sent[0]
+
+            def prog(b, _b=base_done):
+                sent[0] = _b + b
+                task.progress(0.1 + 0.6 * sent[0] / total, f'uploading image: {sent[0] / 2**20:.0f} of {total / 2**20:.0f} MiB')
+
+            f = tar.extractfile(m)
+            ctype = 'application/x-vnd.vmware-streamVmdk' if fi.path.lower().endswith('.vmdk') else 'application/octet-stream'
+            r = requests.post(url, data=_CountingReader(f, m.size, prog, task),
+                              headers={'Content-Type': ctype, 'Content-Length': str(m.size)}, verify=False, timeout=600)
+            if r.status_code >= 300:
+                raise RuntimeError(f'upload of {fi.path} failed: HTTP {r.status_code} {r.text[:200]}')
+            sent[0] = base_done + m.size
+        stop.set()
+        lease.HttpNfcLeaseComplete()
+    except BaseException:
+        stop.set()
+        try:
+            lease.HttpNfcLeaseAbort()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    finally:
+        tar.close()
+    vm = lease.info.entity
+    task.log(f'imported VM {vm.name} ({vm._moId})')
+    cfg = vim.vm.ConfigSpec(numCPUs=cpus, memoryMB=memory_mb, annotation=annotation or None,
+                            vAppConfig=vim.vApp.VmConfigSpec(ovfEnvironmentTransport=['com.vmware.guestInfo']))
+    try:
+        wait_task(vm.ReconfigVM_Task(cfg), 'size the VM')
+    except Exception as e:  # noqa: BLE001
+        task.log(f'WARNING: could not set CPU/memory/OVF transport: {e}')
+    return vm
+
+
+def wipe_vapp_properties(vm, keys):
+    """Blank the given OVF property values (they carried first-boot secrets)."""
+    vac = vm.config.vAppConfig
+    if not vac:
+        return
+    edits = []
+    for p in vac.property:
+        if p.id in keys and p.value:
+            p.value = ''
+            edits.append(vim.vApp.PropertySpec(operation='edit', info=p))
+    if edits:
+        wait_task(vm.ReconfigVM_Task(vim.vm.ConfigSpec(vAppConfig=vim.vApp.VmConfigSpec(property=edits))), 'wipe OVF properties')
+
+
+def guest_state(vm):
+    g = vm.guest
+    return {'ip': g.ipAddress, 'tools': str(g.toolsRunningStatus), 'power': str(vm.runtime.powerState)}

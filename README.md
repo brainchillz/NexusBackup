@@ -98,8 +98,8 @@ owned by root.
 
 1. Open `https://<server>:8460`, accept the self-signed certificate, sign in as the admin you created.
 2. **Connections → Add**: type vCenter or ESXi, host, username, password. The inventory loads in a few seconds.
-3. **Proxies → Add**: name the proxy. The page shows a one-time token and the exact `/etc/hvbackup/agent.conf` to paste. (CLI: `hvbackup proxies add <name>`.)
-4. On the proxy VM, as root:
+3. **Proxies → Deploy proxy VM**: name it, pick the connection, host, datastore and network, optionally paste an SSH public key, and deploy. The server downloads the Ubuntu 24.04 cloud image once (about 560 MiB, checksum verified, cached under the data directory), imports it as a VM, boots it with first-boot data that installs the agent from this server, and reports **online** when the agent calls back; the token is never shown and is blanked from the VM's properties once the agent is up. The VM needs DHCP, reach to Ubuntu's apt mirrors and PyPI, and reach to this server. (CLI: `hvbackup proxies deploy <name> --connection <c> [--host H --datastore DS --network NET --ssh-key-file F] --wait`.) Offline sites: set `HVB_PROXY_IMAGE_URL` to a mirror, or `HVB_PROXY_IMAGE` to an OVA already on the server. Steps 4 and 5 are then done.
+4. Alternatively **Proxies → Register existing** for a VM you install yourself: name the proxy; the page shows a one-time token and the exact `/etc/hvbackup/agent.conf` to paste. (CLI: `hvbackup proxies add <name>`.) Then on that VM, as root:
 
    ```bash
    git clone https://gitlab.onthenile.net/brainchill/hypervisor-backup-server.git
@@ -201,7 +201,7 @@ before the subcommand for raw output.
 | `restore-points list [--vm <vm>]` | Restore points | `hvbackup restore-points list --vm web01` |
 | `restore <rp> --name NAME [...]` | Restore as a new VM; `--connection` (id or name, any target), `--host`, `--datastore`, `--folder`, `--network SRC=DST` (repeatable), `--power-on`, `--keep-identity`, `--wait` | `hvbackup restore 12 --name web01-restored --connection dr-site --network "VM Network=DR-VLAN30" --power-on --wait` |
 | `tasks list\|show\|wait\|cancel` | Task queue and logs | `hvbackup tasks show 7` |
-| `proxies list\|add\|delete` | Proxy VMs; `add` prints the token and agent.conf | `hvbackup proxies add proxy-cluster1` |
+| `proxies list\|add\|deploy\|image\|delete` | Proxy VMs; `deploy` builds one from the cloud image, `add` prints the token and agent.conf for one you install yourself, `image` shows the cached image | `hvbackup proxies deploy proxy-cluster1 --connection prod --network "VM Network" --wait` |
 | `users list\|add\|passwd\|delete` | Local accounts; `--role` | `hvbackup users add alice --role operator` |
 | `tokens list\|add\|delete` | API tokens | `hvbackup tokens add ci` |
 | `gc` | Garbage-collect unreferenced chunks now | `hvbackup gc` |
@@ -395,6 +395,7 @@ both.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Proxy shows offline | Agent not running, wrong URL or token, or it cannot reach port 8460 | On the proxy: `systemctl status hvbackup-agent`, `journalctl -u hvbackup-agent`. Check `/etc/hvbackup/agent.conf`. |
+| Proxy deployment waits and then fails with `the agent has not reported in` | The VM booted but cloud-init could not install the agent: no DHCP lease, no route to apt/PyPI, or the server URL is not reachable from that network | Open the VM console; read `/var/log/hvbackup-bootstrap.log` and `/var/log/cloud-init-output.log`. Fix and run `bash /opt/hvbackup/bootstrap.sh`, or delete the VM and the proxy record and deploy again. |
 | `VM is powered on and no proxy is available on this connection` | No online proxy is tied to that connection | Bring a proxy online; make sure it is a VM on that vSphere. Run **Connections → Refresh** so the server matches it by BIOS UUID, or set its connection when creating it. |
 | `range read ... HTTP 500 (a running VM holds the lock; use a proxy)` | The HTTPS path was used on a running VM | Same as above: this path only works for powered-off VMs. |
 | Task log says consolidation needed or pending | ESXi has not merged the snapshot delta yet | Wait, or consolidate in vCenter (VM → Snapshots → Consolidate). The next run tolerates it. |

@@ -38,6 +38,9 @@ HVB_URL=
 HVB_TLS_CERT=
 HVB_TLS_KEY=
 HVB_LOG_LEVEL=info
+# Proxy VM deployment from the UI: the cloud image to import (downloaded once into HVB_DATA_DIR/images).
+# HVB_PROXY_IMAGE_URL=https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.ova
+# HVB_PROXY_IMAGE=/path/to/local.ova   (offline sites: use this file instead of downloading)
 CONF
         chmod 640 /etc/hvbackup/hvbackup.conf; chgrp hvbackup /etc/hvbackup/hvbackup.conf
     fi

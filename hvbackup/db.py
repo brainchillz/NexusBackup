@@ -82,6 +82,9 @@ def init():
         c = sqlite3.connect(config.DB_PATH)
         c.execute('PRAGMA journal_mode=WAL')
         c.executescript(SCHEMA)
+        for table, col, ddl in (('proxies', 'deploy_task_id', 'INTEGER'), ('proxies', 'vm_name', 'TEXT')):
+            if col not in [r[1] for r in c.execute(f'PRAGMA table_info({table})')]:
+                c.execute(f'ALTER TABLE {table} ADD COLUMN {col} {ddl}')
         c.commit()
         c.close()
         _initialised = True

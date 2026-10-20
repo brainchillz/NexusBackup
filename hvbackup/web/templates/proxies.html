@@ -1,20 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="toolbar"><span class="muted">A proxy is a small VM on each vSphere cluster. It holds no credentials; the server hot-adds disks to it and its agent streams the blocks here. Powered-off VMs need no proxy.</span><span class="spacer"></span><button class="btn primary" id="add" hidden>New proxy</button></div>
+<div class="toolbar"><span class="muted">A proxy is a small VM on each vSphere cluster or standalone host. It holds no credentials; the server hot-adds disks to it and its agent streams the blocks here. Powered-off VMs need no proxy. Deploy one from here, or register one you installed yourself.</span><span class="spacer"></span><button class="btn primary" id="deploy" hidden>Deploy proxy VM</button> <button class="btn" id="add" hidden>Register existing</button></div>
 <div class="card"><div id="list"></div></div>
 {% endblock %}
 {% block script %}
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-  if (can('admin')) document.getElementById('add').hidden = false;
+  if (can('admin')) { document.getElementById('add').hidden = false; document.getElementById('deploy').hidden = false; }
   const el = document.getElementById('list');
   async function load() {
     const rows = await api('GET', '/api/v1/proxies');
     renderTable(el, [
       { h: 'Name', f: p => `<b>${esc(p.name)}</b>` },
-      { h: 'State', f: p => p.online ? badge('online', 'ok') : badge('offline', 'bad') },
+      { h: 'State', f: p => p.online ? badge('online', 'ok') : (p.deploy_state === 'queued' || p.deploy_state === 'running') ? `<a href="/tasks/${p.deploy_task_id}">${badge('deploying…', 'info')}</a>` : p.deploy_state === 'failed' && !p.last_seen ? `<a href="/tasks/${p.deploy_task_id}">${badge('deploy failed', 'bad')}</a>` : badge('offline', 'bad') },
       { h: 'Connection', f: p => p.connection_name ? esc(p.connection_name) : '<span class="muted">not seen on any connection yet</span>' },
-      { h: 'VM', f: p => p.vm_moref ? `<span class="mono">${esc(p.vm_moref)}</span>` : '' },
+      { h: 'VM', f: p => p.vm_name ? `${esc(p.vm_name)} <span class="mono muted">${esc(p.vm_moref || '')}</span>` : p.vm_moref ? `<span class="mono">${esc(p.vm_moref)}</span>` : '' },
       { h: 'Address', f: p => `<span class="mono">${esc(p.address || '')}</span>` },
       { h: 'Agent', f: p => esc(p.version || '') },
       { h: 'Last seen', f: p => titleTime(p.last_seen) },
@@ -36,6 +36,76 @@ document.addEventListener('DOMContentLoaded', () => {
           <p class="muted">Then install the agent (<span class="mono">pip install hvbackup</span> or the package) and <span class="mono">systemctl enable --now hvbackup-agent</span>. Set <span class="mono">HVB_INSECURE=0</span> and <span class="mono">HVB_CA=/path/to/ca.pem</span> once this server has a trusted certificate.</p>`,
           buttons: [{ label: 'Copy config', onClick: async () => { await navigator.clipboard.writeText(conf); toast('Copied'); return false; } }, { label: 'Done' }] });
       } }] });
+  };
+  document.getElementById('deploy').onclick = async () => {
+    const conns = (await api('GET', '/api/v1/connections')).filter(c => c.type === 'vcenter' || c.type === 'esxi');
+    if (!conns.length) { toast('Add a vSphere connection first'); return; }
+    let img = null; try { img = await api('GET', '/api/v1/proxies/image'); } catch (e) { /* no status */ }
+    const imgNote = img ? (img.cached ? `Image: <span class="mono">${esc(img.path.split('/').pop())}</span> is cached on the server.` : img.local ? `Image file <span class="mono">${esc(img.path)}</span> is missing on the server (HVB_PROXY_IMAGE).` : `The server downloads <span class="mono">${esc(img.url)}</span> (about 560 MiB, verified against the published checksum) the first time; later deployments reuse it.`) : '';
+    const m = modal({
+      title: 'Deploy a proxy VM', sticky: true,
+      body: `<p class="muted">The server imports a stock Ubuntu cloud image onto the connection, boots it with first-boot data that installs the agent, and waits until the agent reports in. The VM needs DHCP, reach to Ubuntu's apt mirrors and PyPI, and reach to this server. ${imgNote}</p>
+        <div class="row">
+          <label class="f"><span>Name (also the VM and host name)</span><input name="name" placeholder="proxy-cluster1"></label>
+          <label class="f"><span>Connection</span><select name="connection_id">${conns.map(c => `<option value="${c.id}">${esc(c.name)} (${esc(c.type)})</option>`).join('')}</select></label>
+        </div>
+        <div class="row">
+          <label class="f"><span>Host</span><select name="host"></select></label>
+          <label class="f"><span>Datastore</span><select name="datastore"></select></label>
+        </div>
+        <div class="row">
+          <label class="f"><span>Network</span><select name="network"></select></label>
+          <label class="f"><span>VM folder</span><select name="folder"><option value="">(root VM folder)</option></select></label>
+        </div>
+        <div class="row">
+          <label class="f"><span>vCPUs</span><input name="cpus" type="number" min="1" max="32" value="2"></label>
+          <label class="f"><span>Memory (MiB)</span><input name="memory_mb" type="number" min="1024" step="256" value="2048"></label>
+          <label class="f"><span>Wait for the agent (minutes)</span><input name="timeout_minutes" type="number" min="3" max="180" value="20"></label>
+        </div>
+        <label class="f"><span>Server URL the proxy calls back to</span><input name="server_url" value="${esc(location.origin)}"></label>
+        <label class="f"><span>SSH public key for the <span class="mono">ubuntu</span> user (optional; without it the VM is reachable only through the console)</span><textarea name="ssh_key" rows="2" placeholder="ssh-ed25519 AAAA… you@laptop"></textarea></label>`,
+      buttons: [{ label: 'Cancel' }, { label: 'Deploy', cls: 'primary', onClick: async m => {
+        if (!val(m, 'name')) throw new Error('give the proxy a name');
+        if (!val(m, 'host')) throw new Error('pick a host');
+        const body = { name: val(m, 'name'), connection_id: Number(val(m, 'connection_id')), host: val(m, 'host') || null, datastore: val(m, 'datastore') || null,
+          network: val(m, 'network') || null, folder: val(m, 'folder') || null, cpus: Number(val(m, 'cpus')), memory_mb: Number(val(m, 'memory_mb')),
+          timeout_minutes: Number(val(m, 'timeout_minutes')), server_url: val(m, 'server_url') || null, ssh_key: val(m, 'ssh_key') || null };
+        const res = await api('POST', '/api/v1/proxies/deploy', body);
+        startedTask(res, 'Deployment started');
+        load();
+      } }]
+    });
+    const sel = n => m.querySelector(`[name="${n}"]`);
+    const errBox = m.querySelector('.err');
+    let placement = null;
+    const need = 10 * 1024 * 1024 * 1024;
+    function fillHost() {
+      const h = placement && placement.hosts.find(x => x.name === sel('host').value);
+      const info = (placement && placement.datastores) || {};
+      const dss = (h ? h.datastores : []).map(n => ({ name: n, ...(info[n] || {}) })).sort((a, b) => (b.free || 0) - (a.free || 0));
+      sel('datastore').innerHTML = dss.map(d => `<option value="${esc(d.name)}" ${d.accessible === false || (d.free != null && d.free < need) ? 'disabled' : ''}>${esc(d.name)}${d.free != null ? ` — ${esc(fmtBytes(d.free))} free` : ''}${d.accessible === false ? ' (inaccessible)' : d.free != null && d.free < need ? ' (too small)' : ''}</option>`).join('');
+      const nets = h ? h.networks : [];
+      sel('network').innerHTML = nets.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    }
+    async function loadPlacement() {
+      const cid = Number(sel('connection_id').value);
+      sel('host').innerHTML = '<option value="">loading…</option>'; sel('datastore').innerHTML = ''; sel('network').innerHTML = '';
+      errBox.textContent = '';
+      try { placement = await api('GET', `/api/v1/connections/${cid}/placement`); }
+      catch (e) { placement = null; sel('host').innerHTML = ''; errBox.textContent = 'Cannot read the connection: ' + e.message; return; }
+      const hosts = placement.hosts || [];
+      sel('host').innerHTML = hosts.map(h => {
+        const bad = (h.connection_state && h.connection_state !== 'connected') || h.maintenance;
+        return `<option value="${esc(h.name)}" ${bad ? 'disabled' : ''}>${esc(h.name)}${h.cluster ? ` (${esc(h.cluster)})` : ''}${h.maintenance ? ' — maintenance' : ''}${h.connection_state && h.connection_state !== 'connected' ? ` — ${esc(h.connection_state)}` : ''}</option>`;
+      }).join('');
+      const usable = hosts.filter(h => !((h.connection_state && h.connection_state !== 'connected') || h.maintenance));
+      if (usable[0]) sel('host').value = usable[0].name;
+      sel('folder').innerHTML = '<option value="">(root VM folder)</option>' + (placement.folders || []).map(f => `<option value="${esc(f.moref)}">${esc(f.name)}</option>`).join('');
+      fillHost();
+    }
+    sel('connection_id').onchange = loadPlacement;
+    sel('host').onchange = fillHost;
+    await loadPlacement();
   };
   el.addEventListener('click', e => {
     const b = e.target.closest('button[data-a=del]'); if (!b) return;

@@ -469,8 +469,12 @@ and Restore modals, registration via `hvbackup vsphere-plugin register`
 types), session delegation (vSphere Client session token -> clone ticket ->
 CloneSession -> username -> short-lived hvbackup bearer token), runs
 mirrored into Recent Tasks and posted as custom events. Registered on the lab
-vCenter. Exit criteria: backup and restore driven entirely from the vSphere
-Client, to be confirmed in the lab.
+vCenter. Verified 2026-10-20: a backup of matt-test1 started from the vSphere
+Client ran end to end through vCenter's reverse proxy (session exchange,
+VM resolution, hot-add backup in 17 s). Lesson: vCenter 8.0.3 wants
+three-part manifest version strings (`1.0.0`), not the `1.0.0.0` the SDK
+guide shows. Still to confirm visually: Recent Tasks mirror, a restore from
+the modal.
 
 ### Phase 2b — Nexus Dashboard plug-in (declarative tier shipped)
 `plugins/nexusdash/hvbackup/plugin.yaml`: service card, status table from

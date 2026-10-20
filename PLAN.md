@@ -16,6 +16,14 @@ Next, in order:
    a dedicated least-privilege vCenter role instead of administrator;
    server-driven proxy deployment so a new cluster needs no manual agent
    install.
+1b. **Restore to a different target (DR case).** A vCenter-managed VM must be
+   restorable onto a different ESXi host or cluster, including a standalone
+   host added as its own connection, when the original cluster is gone. The
+   API already accepts `connection_id` on a restore; still to do: expose the
+   target picker in the web UI and the plug-in modal, map networks and
+   datastores between source and target, handle a powered-off/unreachable
+   source vCenter gracefully, and prove it on the lab's standalone ESXi
+   (192.168.35.21) with a restore point taken from the vCenter cluster.
 2. **Phase 2, vCenter plug-in.** Manifest, registration, Backup now and
    Restore on the VM menu, a VM tab with restore points, tasks mirrored into
    Recent Tasks. The UI pages already run inside an iframe; the session

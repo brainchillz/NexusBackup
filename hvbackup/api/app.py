@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import APP_VERSION, config, db
 from ..core import ops, scheduler, tasks
 from ..store.chunks import repo
-from . import agent_routes, routes
+from . import agent_routes, routes, vsphere_plugin_routes
 
 try:
     from . import ui
@@ -36,6 +36,7 @@ def create_app():
     app = FastAPI(title='hvbackup', version=APP_VERSION, lifespan=lifespan, docs_url='/api/docs', openapi_url='/api/openapi.json')
     app.include_router(routes.r)
     app.include_router(agent_routes.r)
+    app.include_router(vsphere_plugin_routes.r)
     if ui is not None:
         app.include_router(ui.r)
     static = os.path.join(os.path.dirname(__file__), '..', 'web', 'static')

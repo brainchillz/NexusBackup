@@ -214,6 +214,21 @@ def test_connection(cid: int, user=Depends(require('admin'))):
         raise HTTPException(400, f'{type(e).__name__}: {e}')
 
 
+class PluginAction(BaseModel):
+    action: str = Field(pattern='^(register|update|unregister|status)$')
+
+
+@r.post('/connections/{cid}/vsphere-plugin')
+def vsphere_plugin(cid: int, body: PluginAction, user=Depends(require('admin'))):
+    try:
+        res = ops.vsphere_plugin(ops.connection(cid), body.action)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f'{type(e).__name__}: {e}')
+    if body.action != 'status':
+        db.audit(user['username'], 'vsphere_plugin_' + body.action, str(cid))
+    return res
+
+
 @r.get('/connections/{cid}/placement')
 def placement(cid: int, user=Depends(current_user)):
     """Hosts, datastores and networks reachable on this connection, for restore dialogs."""

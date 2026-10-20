@@ -1,0 +1,36 @@
+<!doctype html><html><head><meta charset="utf-8"><title>hvbackup</title>
+<script src="/api/ui/htmlClientSdk.js"></script><script src="plugin.js"></script><link rel="stylesheet" href="plugin.css"></head>
+<body data-public-url="__HVB_PUBLIC_URL__">
+<div id="hvb-error" class="err"></div>
+<div id="hvb-main">
+  <h2>hvbackup <span class="muted" style="font-weight:400;font-size:12px">v__HVB_VERSION__ · <a href="__HVB_PUBLIC_URL__" target="_blank" rel="noopener">open full console</a></span></h2>
+  <div class="tiles" id="tiles"></div>
+  <h3>Running tasks</h3><table><thead><tr><th>Task</th><th>Subject</th><th style="width:30%">Progress</th><th>Message</th></tr></thead><tbody id="tasks"><tr><td colspan="4" class="muted">none</td></tr></tbody></table>
+  <h3>Recent runs</h3><table><thead><tr><th>VM</th><th>Job</th><th>Started</th><th>Status</th><th>Kind</th><th>Read</th><th>Error</th></tr></thead><tbody id="runs"></tbody></table>
+  <h3>Protected VMs</h3><table><thead><tr><th>VM</th><th>Power</th><th>Points</th><th>Last backup</th><th>Jobs</th><th>Last run</th></tr></thead><tbody id="vms"></tbody></table>
+</div>
+<script>
+HVB.init(function () {
+  function refresh() {
+    HVB.api('GET', '/status').then(function (s) {
+      var rp = s.repository;
+      document.getElementById('tiles').innerHTML = [
+        ['VMs', s.vms, s.protected_vms + ' protected'], ['Restore points', s.restore_points, HVB.fmtBytes(rp.stored_bytes) + ' stored'],
+        ['Jobs', s.jobs, 'last GC ' + HVB.ago(s.last_gc)], ['Proxies online', s.proxies_online, s.proxies_online ? 'ready' : 'running VMs cannot be read'],
+        ['Failed runs 24h', s.failed_runs_24h, ''], ['Repository free', HVB.fmtBytes(rp.free_bytes), rp.path]
+      ].map(function (t) { return '<div class="tile"><div class="sub">' + HVB.esc(t[0]) + '</div><div class="big">' + HVB.esc(t[1]) + '</div><div class="sub">' + HVB.esc(t[2]) + '</div></div>'; }).join('');
+    });
+    HVB.api('GET', '/tasks?limit=20').then(function (ts) {
+      var run = ts.filter(function (t) { return t.state === 'running' || t.state === 'queued'; });
+      document.getElementById('tasks').innerHTML = run.length ? run.map(function (t) { return '<tr><td>' + HVB.esc(t.kind) + '</td><td>' + HVB.esc(t.subject) + '</td><td><div class="progress"><div style="width:' + Math.round(t.progress * 100) + '%"></div></div></td><td>' + HVB.esc(t.message || '') + '</td></tr>'; }).join('') : '<tr><td colspan="4" class="muted">none</td></tr>';
+    });
+    HVB.api('GET', '/runs?limit=15').then(function (rs) {
+      document.getElementById('runs').innerHTML = rs.map(function (r) { return '<tr><td>' + HVB.esc(r.vm_name) + '</td><td>' + HVB.esc(r.job_name || '-') + '</td><td>' + HVB.ago(r.started) + '</td><td>' + HVB.badge(r.status) + '</td><td>' + HVB.esc(r.kind || '') + '</td><td>' + HVB.fmtBytes(r.bytes_read) + '</td><td class="muted">' + HVB.esc(r.error || '') + '</td></tr>'; }).join('') || '<tr><td colspan="7" class="muted">no runs yet</td></tr>';
+    });
+    HVB.api('GET', '/vms').then(function (vms) {
+      document.getElementById('vms').innerHTML = vms.filter(function (v) { return v.restore_points || v.jobs.length; }).map(function (v) { return '<tr><td>' + HVB.esc(v.name) + '</td><td>' + HVB.esc(v.power_state.replace('powered', '')) + '</td><td>' + v.restore_points + '</td><td>' + (v.last_restore_point ? HVB.ago(v.last_restore_point.created) : '-') + '</td><td>' + HVB.esc(v.jobs.map(function (j) { return j.name; }).join(', ')) + '</td><td>' + (v.last_run ? HVB.badge(v.last_run.status) : '') + '</td></tr>'; }).join('') || '<tr><td colspan="6" class="muted">no VMs protected yet. Right-click a VM and choose "Back up now with hvbackup".</td></tr>';
+    });
+  }
+  refresh(); setInterval(refresh, 5000);
+});
+</script></body></html>

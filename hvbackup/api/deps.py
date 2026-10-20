@@ -10,10 +10,11 @@ COOKIE = 'hvb_session'
 def current_user(request: Request):
     h = request.headers.get('authorization', '')
     if h.lower().startswith('bearer '):
-        u = auth.authenticate_token(h[7:].strip())
+        t = h[7:].strip()
+        u = auth.read_plugin_token(t) if t.startswith('hvbp_') else auth.authenticate_token(t)
         if u:
             return u
-        raise HTTPException(401, 'invalid token')
+        raise HTTPException(401, 'invalid or expired token')
     u = auth.read_session(request.cookies.get(COOKIE))
     if u:
         return u

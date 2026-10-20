@@ -19,6 +19,7 @@ from . import secrets as sec
 
 ROLES = ['viewer', 'restore', 'operator', 'admin']
 SESSION_TTL = 12 * 3600
+PLUGIN_TOKEN_TTL = 3600
 
 
 def role_at_least(have, need):
@@ -155,6 +156,25 @@ def authenticate_proxy(t):
 # ── sessions ─────────────────────────────────────────────────────────
 def _serializer():
     return URLSafeTimedSerializer(sec.signing_key(), salt='hvb-session')
+
+
+def make_plugin_token(username):
+    """Short-lived bearer token for vSphere Client plug-in pages (no cookie: they live in another origin)."""
+    return 'hvbp_' + URLSafeTimedSerializer(sec.signing_key(), salt='hvb-plugin').dumps({'u': username})
+
+
+def read_plugin_token(t):
+    if not t or not t.startswith('hvbp_'):
+        return None
+    try:
+        data = URLSafeTimedSerializer(sec.signing_key(), salt='hvb-plugin').loads(t[5:], max_age=PLUGIN_TOKEN_TTL)
+    except BadSignature:
+        return None
+    u = get_user(data.get('u'))
+    if not u or u['disabled']:
+        return None
+    u['via'] = 'vsphere'
+    return u
 
 
 def make_session(username):

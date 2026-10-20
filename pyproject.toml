@@ -32,4 +32,4 @@ hvbackup-agent = "hvbackup.agent.proxy_agent:main"
 include = ["hvbackup*"]
 
 [tool.setuptools.package-data]
-hvbackup = ["web/templates/*.html", "web/static/*"]
+hvbackup = ["web/templates/*.html", "web/static/*", "web/vsphere/*"]

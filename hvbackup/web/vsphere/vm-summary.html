@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><title>hvbackup</title>
+<script src="/api/ui/htmlClientSdk.js"></script><script src="plugin.js"></script><link rel="stylesheet" href="plugin.css"><style>body{padding:6px 4px}</style></head>
+<body data-public-url="__HVB_PUBLIC_URL__">
+<div id="hvb-error" class="err"></div>
+<div id="hvb-main" class="card"><dl id="facts"><dt>hvbackup</dt><dd class="muted">loading…</dd></dl><div class="actions" id="act" style="display:none"><button class="primary" id="backup">Back up now</button></div></div>
+<script>
+HVB.init(function (ctx) {
+  if (!ctx.length) { HVB.fail('No VM in context.'); return; }
+  var vm;
+  function render() {
+    HVB.api('GET', '/vms/' + vm.id).then(function (v) {
+      var rp = v.restore_points[0], run = v.runs[0], jobs = (v.jobs || []);
+      document.getElementById('facts').innerHTML =
+        '<dt>Protection</dt><dd>' + (v.restore_points.length ? HVB.badge('protected') : '<span class="badge">not protected</span>') + '</dd>' +
+        '<dt>Restore points</dt><dd>' + v.restore_points.length + '</dd>' +
+        '<dt>Last backup</dt><dd>' + (rp ? HVB.fmtTime(rp.created) + ' <span class="muted">(' + HVB.esc(rp.kind) + ', ' + HVB.fmtBytes(rp.allocated_bytes) + ')</span>' : '-') + '</dd>' +
+        '<dt>Last run</dt><dd>' + (run ? HVB.badge(run.status) + (run.error ? ' <span class="muted">' + HVB.esc(run.error) + '</span>' : '') : '-') + '</dd>' +
+        '<dt>CBT</dt><dd>' + (v.cbt_enabled ? 'enabled' : 'not yet enabled (first backup enables it)') + '</dd>';
+      var act = document.getElementById('act'); act.style.display = (HVB.user && /operator|admin/.test(HVB.user.role)) ? 'flex' : 'none';
+    });
+  }
+  HVB.resolve(ctx[0]).then(function (v) { vm = v; render(); setInterval(render, 10000); }).catch(function (e) { HVB.fail(e.message); });
+  document.getElementById('backup').onclick = function () {
+    var b = this; b.disabled = true;
+    HVB.api('POST', '/vms/' + vm.id + '/backup', { quiesce: true }).then(function () { b.textContent = 'Backup started'; setTimeout(function () { b.disabled = false; b.textContent = 'Back up now'; }, 5000); }).catch(function (e) { b.disabled = false; alert(e.message); });
+  };
+});
+</script></body></html>

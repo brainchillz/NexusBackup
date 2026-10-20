@@ -1,0 +1,33 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Back up now</title>
+<script src="/api/ui/htmlClientSdk.js"></script><script src="plugin.js"></script><link rel="stylesheet" href="plugin.css"></head>
+<body data-public-url="__HVB_PUBLIC_URL__">
+<div id="hvb-error" class="err"></div>
+<div id="hvb-main">
+  <p id="what" class="muted">Resolving selected VMs…</p>
+  <label class="check"><input type="checkbox" id="quiesce" checked> Quiesce the guest file system (needs VMware Tools)</label>
+  <div id="progress"></div>
+  <div class="actions"><button id="cancel">Close</button><button class="primary" id="go" disabled>Back up now</button></div>
+</div>
+<script>
+HVB.init(function (ctx) {
+  var vms = [];
+  Promise.all(ctx.map(function (id) { return HVB.resolve(id).catch(function (e) { return { error: e.message, id: id }; }); })).then(function (rs) {
+    vms = rs.filter(function (r) { return !r.error; });
+    var bad = rs.filter(function (r) { return r.error; });
+    document.getElementById('what').innerHTML = (vms.length ? 'Back up ' + vms.length + ' VM' + (vms.length > 1 ? 's' : '') + ': <b>' + vms.map(function (v) { return HVB.esc(v.name); }).join(', ') + '</b>' : 'No selected VM is known to hvbackup.') + (bad.length ? '<br><span class="muted">' + HVB.esc(bad.map(function (b) { return b.error; }).join('; ')) + '</span>' : '');
+    document.getElementById('go').disabled = !vms.length || !(HVB.user && /operator|admin/.test(HVB.user.role));
+  });
+  document.getElementById('cancel').onclick = function () { HVB.close(); };
+  document.getElementById('go').onclick = function () {
+    var q = document.getElementById('quiesce').checked, go = this; go.disabled = true;
+    var box = document.getElementById('progress'); box.innerHTML = '';
+    vms.forEach(function (v) {
+      var row = document.createElement('div'); row.innerHTML = '<div>' + HVB.esc(v.name) + ' <span class="muted">starting…</span></div><div class="progress"><div style="width:0"></div></div>'; box.appendChild(row);
+      HVB.api('POST', '/vms/' + v.id + '/backup', { quiesce: q }).then(function (d) {
+        HVB.pollTask(d.task_id, function (t) { row.querySelector('span').innerHTML = HVB.badge(t.state) + ' ' + HVB.esc(t.message || ''); row.querySelector('.progress > div').style.width = Math.round(t.progress * 100) + '%'; });
+      }).catch(function (e) { row.querySelector('span').innerHTML = HVB.badge('failed') + ' ' + HVB.esc(e.message); });
+    });
+    document.getElementById('cancel').textContent = 'Close (backups continue)';
+  };
+});
+</script></body></html>

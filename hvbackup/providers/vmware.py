@@ -25,7 +25,7 @@ from .. import config, db
 from ..core import uuids, work
 from ..core.tasks import Cancelled
 from ..store.chunks import ZERO_HASH, repo
-from . import base
+from . import base, vsphere_plugin as vsp
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 log = logging.getLogger('hvbackup.vmware')
@@ -93,7 +93,7 @@ class VMware:
     def about(self):
         a = self.content.about
         return {'name': a.fullName, 'version': a.version, 'build': a.build, 'api_type': a.apiType,
-                'is_vcenter': a.apiType == 'VirtualCenter'}
+                'is_vcenter': a.apiType == 'VirtualCenter', 'instance_uuid': a.instanceUuid}
 
     def collect(self, vimtype, props):
         view = self.content.viewManager.CreateContainerView(self.content.rootFolder, [vimtype], True)
@@ -330,6 +330,8 @@ def backup_vm(task, api: VMware, vm_row, run_id, proxy_row, quiesce=True):
             if s.name.startswith('hvbackup'):
                 wait_task(s.snapshot.RemoveSnapshot_Task(removeChildren=False, consolidate=True), 'remove stale snapshot')
     api.ensure_cbt(vm, task)
+    vct = vsp.VcTask(api, vm, vsp.TASK_BACKUP)
+    task.vc_task = vct
     prev_rp, prev_cbt = _prev_state(vm_row['id'])
     prev_manifest = rep.read_manifest(prev_rp['manifest']) if prev_rp else None
     prev_idx = {d['key']: d for d in prev_manifest['disks']} if prev_manifest else {}
@@ -385,7 +387,9 @@ def backup_vm(task, api: VMware, vm_row, run_id, proxy_row, quiesce=True):
             records = []
             if n:
                 def prog(done_bytes, _base=done_chunks, _n=n):
-                    task.progress((_base + done_bytes / cs) / max(total_chunks, 1), f'disk {key}: {done_bytes / 2**20:.0f} MiB read')
+                    frac = (_base + done_bytes / cs) / max(total_chunks, 1)
+                    task.progress(frac, f'disk {key}: {done_bytes / 2**20:.0f} MiB read')
+                    vct.progress(frac * 100)
                 if proxy_row is not None:
                     stats['transport'] = 'hotadd'
                     records = _read_via_proxy(task, api, proxy_row, descriptor, d.capacityInBytes, ranges, cs, prog)
@@ -435,6 +439,8 @@ def backup_vm(task, api: VMware, vm_row, run_id, proxy_row, quiesce=True):
             c.execute('INSERT OR REPLACE INTO cbt_state(vm_id,disk_key,change_id,restore_point_id) VALUES(?,?,?,?)',
                       (vm_row['id'], d['key'], d['change_id'], rp_id))
     task.log(f'restore point {rp_id} written: {stats["kind"]}, {stats["bytes_read"] / 2**20:.0f} MiB read, {allocated / 2**30:.1f} GiB allocated')
+    vct.done()
+    vsp.post_event(api, vm, vsp.EVENT_DONE, f'hvbackup backup of {vm.name} completed ({stats["kind"]})', stats['kind'])
     return rp_id, stats
 
 
@@ -524,6 +530,8 @@ def restore_vm(task, api: VMware, rp, options, proxy_row):
             raise RuntimeError(f'a VM named {name!r} already exists')
 
     vm_folder = f'[{ds.name}] {name}'
+    vct = vsp.VcTask(api, host, vsp.TASK_RESTORE)
+    task.vc_task = vct
     api.content.fileManager.MakeDirectory(name=vm_folder, datacenter=dc, createParentDirectories=True)
     task.log(f'restoring {spec["name"]} as {name} on {host_name} / {ds.name}')
     total = sum(d['allocated'] for d in manifest['disks'])
@@ -541,6 +549,7 @@ def restore_vm(task, api: VMware, rp, options, proxy_row):
 
         def prog(b, _base=done):
             task.progress((_base + b) / max(total, 1), f'disk {d["key"]}: {b / 2**20:.0f} MiB written')
+            vct.progress((_base + b) / max(total, 1) * 100)
         if proxy_row is not None:
             _write_via_proxy(task, api, proxy_row, path, d['capacity'], records, cs, prog)
         else:
@@ -613,6 +622,7 @@ def restore_vm(task, api: VMware, rp, options, proxy_row):
     if options.get('power_on'):
         wait_task(vm.PowerOnVM_Task(), 'power on')
         task.log('powered on')
+    vct.done()
     return {'moref': vm._moId, 'name': vm.name}
 
 

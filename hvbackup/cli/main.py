@@ -329,6 +329,11 @@ def cmd_tokens(args):
         out(args, c.call('DELETE', f'/tokens/{args.id}'))
 
 
+def cmd_vsphere_plugin(args):
+    c = Client()
+    out(args, c.call('POST', f'/connections/{args.connection}/vsphere-plugin', json={'action': args.action}, timeout=120))
+
+
 def cmd_gc(args):
     c = Client()
     res = c.call('POST', '/maintenance/gc')
@@ -365,6 +370,7 @@ def main(argv=None):
     p = sub.add_parser('users'); p.add_argument('action', choices=['list', 'add', 'passwd', 'delete']); p.add_argument('username', nargs='?'); p.add_argument('--password'); p.add_argument('--role', default='viewer'); p.set_defaults(fn=cmd_users)
     p = sub.add_parser('tokens'); p.add_argument('action', choices=['list', 'add', 'delete']); p.add_argument('name', nargs='?'); p.add_argument('--username'); p.add_argument('--id', type=int); p.set_defaults(fn=cmd_tokens)
     sub.add_parser('gc', help='run garbage collection now').set_defaults(fn=cmd_gc)
+    p = sub.add_parser('vsphere-plugin', help='register the vSphere Client plug-in on a vCenter connection'); p.add_argument('action', choices=['register', 'update', 'unregister', 'status']); p.add_argument('--connection', type=int, required=True); p.set_defaults(fn=cmd_vsphere_plugin)
 
     args = ap.parse_args(argv)
     if args.cmd == 'proxies' and args.action == 'delete':

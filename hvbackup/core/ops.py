@@ -32,6 +32,21 @@ def test_connection(conn_row):
         return api.about()
 
 
+def vsphere_plugin(conn_row, action):
+    from ..providers import vsphere_plugin as vsp
+    from .. import config
+    if action in ('register', 'update') and not config.PUBLIC_URL:
+        raise RuntimeError('HVB_URL must be set to the public https URL of this server before registering the plug-in')
+    with open_api(conn_row) as api:
+        if not api.about()['is_vcenter']:
+            raise RuntimeError('the vSphere Client plug-in registers with vCenter, not a standalone ESXi host')
+        if action in ('register', 'update'):
+            return vsp.register(api, config.PUBLIC_URL)
+        if action == 'unregister':
+            return vsp.unregister(api)
+        return vsp.status(api)
+
+
 def placement(conn_row):
     with open_api(conn_row) as api:
         return api.placement()
@@ -186,6 +201,13 @@ def _backup_one(task, api, cr, vm_row, job):
     except Exception as e:  # noqa: BLE001
         log.exception('backup of %s failed', vm_row['name'])
         task.log(f'{vm_row["name"]}: FAILED: {type(e).__name__}: {e}')
+        vct = getattr(task, 'vc_task', None)
+        if vct is not None:
+            vct.failed(f'{type(e).__name__}: {e}')
+        try:
+            vmware.vsp.post_event(api, api.vm_by_moref(vm_row['moref']), vmware.vsp.EVENT_FAILED, f'hvbackup backup of {vm_row["name"]} failed: {type(e).__name__}: {e}')
+        except Exception:  # noqa: BLE001
+            pass
         with db.conn() as c:
             c.execute('UPDATE runs SET finished=?, status=?, error=? WHERE id=?', (time.time(), 'failed', f'{type(e).__name__}: {e}'[:1000], run_id))
         return {'vm': vm_row['name'], 'status': 'failed', 'error': str(e)}
@@ -258,7 +280,13 @@ def restore(task, restore_point_id, options):
     with open_api(cr) as api:
         proxy = pick_proxy(cr['id'])
         task.log(f'restore point {rp["id"]} of {vm_row["name"]} -> {cr["name"]} via {"proxy " + proxy["name"] if proxy else "HTTPS upload"}')
-        res = vmware.restore_vm(task, api, rp, options, proxy)
+        try:
+            res = vmware.restore_vm(task, api, rp, options, proxy)
+        except Exception as e:
+            vct = getattr(task, 'vc_task', None)
+            if vct is not None:
+                vct.failed(f'{type(e).__name__}: {e}')
+            raise
     tasks.create('inventory', subject=cr['name'], created_by='restore', connection_id=cr['id'])
     return res
 

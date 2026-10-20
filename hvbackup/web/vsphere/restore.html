@@ -1,0 +1,44 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Restore</title>
+<script src="/api/ui/htmlClientSdk.js"></script><script src="plugin.js"></script><link rel="stylesheet" href="plugin.css"></head>
+<body data-public-url="__HVB_PUBLIC_URL__">
+<div id="hvb-error" class="err"></div>
+<div id="hvb-main">
+  <label>Restore point</label><select id="rp"></select>
+  <div class="row"><div><label>New VM name</label><input type="text" id="name"></div><div><label>Host</label><select id="host"></select></div></div>
+  <div class="row"><div><label>Datastore</label><select id="ds"></select></div><div><label>&nbsp;</label><label class="check" style="margin:0"><input type="checkbox" id="poweron"> Power on after restore</label></div></div>
+  <label class="check"><input type="checkbox" id="newid" checked> New identity (fresh MAC addresses and BIOS UUID). Untick only when the original VM is gone: the guest keeps its DHCP lease and host keys either way.</label>
+  <div id="progress"></div>
+  <div class="actions"><button id="cancel">Close</button><button class="primary" id="go" disabled>Restore</button></div>
+</div>
+<script>
+HVB.init(function (ctx) {
+  var vm, rps = [], custom = {}; try { custom = htmlClientSdk.modal.getCustomData() || {}; } catch (e) { }
+  if (!ctx.length) { HVB.fail('No VM in context.'); return; }
+  HVB.resolve(ctx[0]).then(function (v) {
+    vm = v;
+    return Promise.all([HVB.api('GET', '/restore-points?vm_id=' + v.id), HVB.api('GET', '/vms/' + v.id)]);
+  }).then(function (res) {
+    rps = res[0]; var full = res[1];
+    var sel = document.getElementById('rp'); sel.innerHTML = rps.map(function (r) { return '<option value="' + r.id + '">' + HVB.esc(HVB.fmtTime(r.created) + ' · ' + r.kind + ' · ' + HVB.fmtBytes(r.allocated_bytes)) + '</option>'; }).join('');
+    if (custom.rp) sel.value = custom.rp;
+    if (!rps.length) { HVB.fail('No restore points for ' + vm.name + '.'); return; }
+    document.getElementById('name').value = vm.name + '-restored';
+    return HVB.api('GET', '/connections/' + full.connection_id + '/placement').then(function (p) {
+      var hs = document.getElementById('host'), ds = document.getElementById('ds');
+      hs.innerHTML = p.hosts.map(function (h) { return '<option value="' + HVB.esc(h.name) + '">' + HVB.esc(h.name + (h.cluster ? ' (' + h.cluster + ')' : '')) + '</option>'; }).join('');
+      function fillDs() { var h = p.hosts.filter(function (x) { return x.name === hs.value; })[0]; ds.innerHTML = (h ? h.datastores : []).map(function (d) { return '<option>' + HVB.esc(d) + '</option>'; }).join(''); }
+      hs.onchange = fillDs; if (full.host) hs.value = full.host; fillDs();
+      document.getElementById('go').disabled = !(HVB.user && /restore|operator|admin/.test(HVB.user.role));
+    });
+  }).catch(function (e) { HVB.fail(e.message); });
+  document.getElementById('cancel').onclick = function () { HVB.close(); };
+  document.getElementById('go').onclick = function () {
+    var go = this; go.disabled = true;
+    var body = { name: document.getElementById('name').value, host: document.getElementById('host').value, datastore: document.getElementById('ds').value, power_on: document.getElementById('poweron').checked, new_identity: document.getElementById('newid').checked };
+    var box = document.getElementById('progress'); box.innerHTML = '<div><span class="muted">starting…</span></div><div class="progress"><div style="width:0"></div></div>';
+    HVB.api('POST', '/restore-points/' + document.getElementById('rp').value + '/restore', body).then(function (d) {
+      HVB.pollTask(d.task_id, function (t) { box.querySelector('span').innerHTML = HVB.badge(t.state) + ' ' + HVB.esc(t.message || ''); box.querySelector('.progress > div').style.width = Math.round(t.progress * 100) + '%'; if (t.state === 'done') document.getElementById('cancel').textContent = 'Close'; });
+    }).catch(function (e) { go.disabled = false; box.querySelector('span').innerHTML = HVB.badge('failed') + ' ' + HVB.esc(e.message); });
+  };
+});
+</script></body></html>

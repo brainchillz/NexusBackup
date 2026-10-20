@@ -295,7 +295,10 @@ class BackupNow(BaseModel):
 @r.post('/vms/{vm_id}/backup')
 def backup_now(vm_id: int, body: BackupNow = BackupNow(), user=Depends(require('operator'))):
     db.audit(user['username'], 'backup_now', str(vm_id))
-    return {'task_id': ops.backup_vm_now(vm_id, created_by=user['username'], quiesce=body.quiesce)}
+    try:
+        return {'task_id': ops.backup_vm_now(vm_id, created_by=user['username'], quiesce=body.quiesce)}
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
 
 
 # ── jobs ─────────────────────────────────────────────────────────────

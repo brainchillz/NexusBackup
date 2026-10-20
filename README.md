@@ -396,6 +396,7 @@ both.
 |---|---|---|
 | Proxy shows offline | Agent not running, wrong URL or token, or it cannot reach port 8460 | On the proxy: `systemctl status hvbackup-agent`, `journalctl -u hvbackup-agent`. Check `/etc/hvbackup/agent.conf`. |
 | Proxy deployment waits and then fails with `the agent has not reported in` | The VM booted but cloud-init could not install the agent: no DHCP lease, no route to apt/PyPI, or the server URL is not reachable from that network | Open the VM console; read `/var/log/hvbackup-bootstrap.log` and `/var/log/cloud-init-output.log`. Fix and run `bash /opt/hvbackup/bootstrap.sh`, or delete the VM and the proxy record and deploy again. |
+| `… is a template: vSphere cannot snapshot templates` | Back up now or a job hit a VM template | Convert the template to a VM, or clone it and back up the clone. Templates are not included in the plug-in VM lists. |
 | `VM is powered on and no proxy is available on this connection` | No online proxy is tied to that connection | Bring a proxy online; make sure it is a VM on that vSphere. Run **Connections → Refresh** so the server matches it by BIOS UUID, or set its connection when creating it. |
 | `range read ... HTTP 500 (a running VM holds the lock; use a proxy)` | The HTTPS path was used on a running VM | Same as above: this path only works for powered-off VMs. |
 | Task log says consolidation needed or pending | ESXi has not merged the snapshot delta yet | Wait, or consolidate in vCenter (VM → Snapshots → Consolidate). The next run tolerates it. |

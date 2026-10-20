@@ -160,6 +160,8 @@ def backup_vm_now(vm_id, created_by=None, quiesce=True):
         raise RuntimeError('vm not found')
     if vm_busy(vm_id):
         raise RuntimeError(f'a backup of {vm_row["name"]} is already running')
+    if vm_row.get('is_template'):
+        raise RuntimeError(f'{vm_row["name"]} is a template: vSphere cannot snapshot templates. Convert it to a VM or clone it, then back that up')
     return tasks.create('backup_vm', subject=vm_row['name'], created_by=created_by, vm_id=vm_id, quiesce=quiesce)
 
 
@@ -180,6 +182,8 @@ def _backup_one(task, api, cr, vm_row, job):
                   (job['id'], vm_row['id'], task.id, time.time(), 'running'))
         run_id = c.execute('SELECT last_insert_rowid()').fetchone()[0]
     try:
+        if vm_row.get('is_template'):
+            raise RuntimeError(f'{vm_row["name"]} is a template: vSphere cannot snapshot templates. Convert it to a VM or clone it, then back that up')
         proxy = pick_proxy(cr['id'])
         if proxy is None and vm_row['power_state'] == 'poweredOn':
             # maybe a proxy exists but is tied to no connection yet

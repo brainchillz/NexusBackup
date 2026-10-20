@@ -94,9 +94,15 @@ Next, in order:
    proxy that was given its connection explicitly. Learned: a cloned proxy
    must get a new machine-id and `dhcp-identifier: mac` before it touches
    the network, or it takes the original's DHCP address (README).
-2. **Phase 2, vCenter plug-in, loose ends.** Built and registered (§8). Still
-   to confirm visually in the vSphere Client: the Recent Tasks mirror, and a
-   restore from the modal, now with the target picker.
+2. **Phase 2, vCenter plug-in** (visual checks done 2026-10-20, headless
+   Chromium driving the vSphere Client: login, Client Plugins page lists
+   hvbackup, VM summary card shows protection state and last backup, Monitor
+   > hvbackup > Backups tab lists restore points and runs, the Restore modal
+   defaults to the VM's own vCenter with host/datastore/network filled and
+   shows the DR note when another target is chosen, a restore from the modal
+   created the VM, and the Recent Tasks pane showed "hvbackup restore" with
+   initiator hvbackup; the Tasks view lists "hvbackup backup" for the runs).
+   Nothing open. Scratch driver: scratchpad `vsc/check.py`.
 3. **Phase 3, Proxmox provider.** PVE 9 backup-provider shim into the same
    ingest endpoint, restore to Proxmox, containers as file trees. Makes the
    catalog cross-platform, which conversion depends on.
@@ -108,7 +114,7 @@ Next, in order:
    libguestfs tool set installed there).
 
 Open decisions for the owner: which real VMs join the nightly job during the
-soak; whether Proxmox (3) comes next or the Phase 2 visual checks (2).
+soak. Proxmox (3) is next.
 
 Where things are written down: this file (design and status), `README.md`
 (install and use), `../OTNOPS-Infra/hosts/testserver.md` (serenity install,
@@ -537,7 +543,7 @@ Not yet done from the original scope: server-driven deployment of the proxy
 appliance (today: `install.sh --agent` on any small Linux VM).
 Exit criteria still open: two weeks of nightly runs with verified restores.
 
-### Phase 2 — vCenter plug-in (built 2026-10-20, awaiting visual check)
+### Phase 2 — vCenter plug-in (built and visually checked 2026-10-20)
 Delivered: generated manifest (`/vsphere-plugin/plugin.json`), global view, VM
 summary card, VM Monitor "Backups" tab, right-click Back up now (multi-select)
 and Restore modals, registration via `hvbackup vsphere-plugin register`
@@ -549,8 +555,11 @@ vCenter. Verified 2026-10-20: a backup of matt-test1 started from the vSphere
 Client ran end to end through vCenter's reverse proxy (session exchange,
 VM resolution, hot-add backup in 17 s). Lesson: vCenter 8.0.3 wants
 three-part manifest version strings (`1.0.0`), not the `1.0.0.0` the SDK
-guide shows. Still to confirm visually: Recent Tasks mirror, a restore from
-the modal.
+guide shows. Visual check in the vSphere Client (headless Chromium): summary
+card, Backups tab, restore modal with the target picker, a restore run from
+it, Recent Tasks mirror and Tasks view entries all confirmed. Recent Tasks
+is session-scoped, so only tasks started while the client is open appear
+there; the Tasks view shows the history.
 
 ### Phase 2b — Nexus Dashboard plug-in (both tiers shipped 2026-10-20)
 `plugins/nexusdash/hvbackup/plugin.yaml`: service card, status table from

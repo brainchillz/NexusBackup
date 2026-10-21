@@ -31,9 +31,13 @@ Next, in order:
    creates the admin; `--agent` for proxies; a rerun is an upgrade and
    touches no account. Tested in throwaway Ubuntu 24.04 containers (fresh,
    rerun, piped clone path, agent) and with Docker Compose on the dev host;
-   serenity upgraded through it. The GitLab project is private, so the
-   `curl | bash` form works only after the project is made public; the
-   guide says to clone first.
+   serenity upgraded through it. The public mirror on GitHub
+   (brainchillz/Multi-Hypervisor-Backup) makes the `curl | bash` form work;
+   `tools/gate.py` (forbidden terms, allowed identities, no co-author
+   trailers, whole history and tree; lists kept outside the repository and
+   in the GitHub secrets) runs before every push there (`tools/publish.sh`,
+   pre-push hook) and in GitHub Actions; `ci.yml` runs the tests and builds
+   the container image to GHCR on main and version tags.
 1f. **Proxy VM deployed from the UI** (built 2026-10-20). Proxies → Deploy
    proxy VM, `POST /proxies/deploy`, `hvbackup proxies deploy`. The server
    fetches the Ubuntu 24.04 cloud OVA once (SHA256 from the publisher's

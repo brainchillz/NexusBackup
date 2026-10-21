@@ -56,7 +56,7 @@ pages:
 
       - type: iframe
         title: Backup console
-        src: https://serenity.onthenile.net:8460/
+        src: https://backup.example.net:8460/
         height: 900
 
       - type: log_tail

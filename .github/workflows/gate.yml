@@ -1,0 +1,21 @@
+# Publication gate: every push and pull request is checked against the forbidden-term list
+# and the allowed-identity list held in the repository secrets GATE_TERMS and GATE_AUTHORS.
+# The gate refuses to pass when the secrets are missing.
+name: gate
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan history and tree
+        env:
+          GATE_TERMS: ${{ secrets.GATE_TERMS }}
+          GATE_AUTHORS: ${{ secrets.GATE_AUTHORS }}
+        run: python3 tools/gate.py --all --worktree

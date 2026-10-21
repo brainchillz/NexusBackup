@@ -49,8 +49,8 @@ Full guide with screenshots: [docs/INSTALL.md](docs/INSTALL.md). The short
 version, on a fresh Ubuntu or Debian machine:
 
 ```bash
-git clone https://gitlab.onthenile.net/brainchill/hypervisor-backup-server.git
-cd hypervisor-backup-server
+git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
+cd Multi-Hypervisor-Backup
 sudo ./packaging/get.sh --repo /srv/hvbackup --url https://backup.example.net:8460
 ```
 
@@ -93,7 +93,7 @@ the same package enables `hvbackup-agent` instead of the server.
 
 ```bash
 cp .env.example .env     # set HVB_URL and HVB_REPO_HOST
-docker compose up -d --build
+docker compose up -d     # pulls ghcr.io/brainchillz/multi-hypervisor-backup; add --build to build locally
 docker compose exec hvbackup hvbackup init-admin admin
 ```
 
@@ -113,8 +113,8 @@ the guide.
 4. Alternatively **Proxies → Register existing** for a VM you install yourself: name the proxy; the page shows a one-time token and the exact `/etc/hvbackup/agent.conf` to paste. (CLI: `hvbackup proxies add <name>`.) Then on that VM, as root:
 
    ```bash
-   git clone https://gitlab.onthenile.net/brainchill/hypervisor-backup-server.git
-   cd hypervisor-backup-server
+   git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
+   cd Multi-Hypervisor-Backup
    sudo ./packaging/install.sh --agent
    sudo nano /etc/hvbackup/agent.conf        # paste HVB_URL and HVB_PROXY_TOKEN from step 3
    sudo systemctl enable --now hvbackup-agent
@@ -488,7 +488,7 @@ Server logs: `journalctl -u hvbackup` (native) or `docker compose logs -f`
 |---|---|---|
 | Native | `git pull && sudo ./packaging/install.sh` or `sudo ./packaging/get.sh` (restarts the service, keeps config, accounts and data) | `sudo systemctl disable --now hvbackup; sudo rm -rf /opt/hvbackup /etc/systemd/system/hvbackup.service`; remove `/etc/hvbackup`, `/var/lib/hvbackup` and the repository when you no longer need the backups |
 | Debian package | Build the new `.deb`, `sudo apt install ./dist/hvbackup_*.deb` | `sudo apt remove hvbackup`; data and config stay until you delete them |
-| Docker | `git pull && docker compose up -d --build` | `docker compose down`; add `-v` to drop the `hvbackup-data` volume; the repository directory on the host is untouched |
+| Docker | `git pull && docker compose pull && docker compose up -d` (or `--build`) | `docker compose down`; add `-v` to drop the `hvbackup-data` volume; the repository directory on the host is untouched |
 | Proxy agent | Same as native, with `--agent` (deployed proxies: redeploy, or run the agent install on them) | `sudo systemctl disable --now hvbackup-agent; sudo rm -rf /opt/hvbackup /etc/hvbackup` |
 
 The catalog schema is created and extended automatically on start.

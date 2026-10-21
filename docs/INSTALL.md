@@ -91,16 +91,16 @@ installer, or use Docker.
 installer. On a fresh machine, as root:
 
 ```bash
-git clone https://gitlab.onthenile.net/brainchill/hypervisor-backup-server.git
-cd hypervisor-backup-server
+git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
+cd Multi-Hypervisor-Backup
 sudo ./packaging/get.sh --repo /srv/hvbackup --url https://backup.example.net:8460
 ```
 
-If the project is reachable without a login you can skip the clone and pipe
-the script; it clones into `/opt/hvbackup/src` itself:
+Or skip the clone and pipe the script; it clones into `/opt/hvbackup/src`
+itself:
 
 ```bash
-curl -fsSL https://gitlab.onthenile.net/brainchill/hypervisor-backup-server/-/raw/main/packaging/get.sh \
+curl -fsSL https://raw.githubusercontent.com/brainchillz/Multi-Hypervisor-Backup/main/packaging/get.sh \
   | sudo bash -s -- --repo /srv/hvbackup --url https://backup.example.net:8460
 ```
 
@@ -173,8 +173,8 @@ sudo chown hvbackup:hvbackup /srv/hvbackup && sudo chmod 750 /srv/hvbackup
 ### 4.3 Get the code
 
 ```bash
-git clone https://gitlab.onthenile.net/brainchill/hypervisor-backup-server.git
-cd hypervisor-backup-server
+git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
+cd Multi-Hypervisor-Backup
 git checkout main          # or a tag
 ```
 
@@ -265,8 +265,8 @@ published.
 ### 5.2 Get the code and configure
 
 ```bash
-git clone https://gitlab.onthenile.net/brainchill/hypervisor-backup-server.git
-cd hypervisor-backup-server
+git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
+cd Multi-Hypervisor-Backup
 cp .env.example .env
 ```
 
@@ -279,12 +279,15 @@ HVB_REPO_HOST=/srv/hvbackup                # host directory for the repository
 
 `compose.yml` publishes port 8460, mounts `HVB_REPO_HOST` at
 `/var/lib/hvbackup/repo` and keeps the catalog, secrets and certificate in the
-named volume `hvbackup-data`.
+named volume `hvbackup-data`. The image is
+`ghcr.io/brainchillz/multi-hypervisor-backup`, built by the project's CI for
+every release; `docker compose up -d` pulls it, `--build` builds it from the
+checkout instead.
 
 ### 5.3 Build, start, create the admin
 
 ```bash
-docker compose up -d --build
+docker compose up -d            # pulls the published image; add --build to build from the checkout
 docker compose exec hvbackup hvbackup init-admin admin
 ```
 
@@ -301,9 +304,9 @@ sudo ./packaging/get.sh --docker --repo /srv/hvbackup --url https://backup.examp
 | CLI | `docker compose exec hvbackup hvbackup status` (any CLI command, inside the container it needs no token) |
 | Logs | `docker compose logs -f` |
 | Restart | `docker compose restart` |
-| Upgrade | `git pull && docker compose up -d --build` |
+| Upgrade | `git pull && docker compose pull && docker compose up -d` (or `--build`) |
 | Stop | `docker compose down` (data and repository stay) |
-| Back up the catalog volume | `docker run --rm -v hypervisor-backup-server_hvbackup-data:/d -v "$PWD":/b alpine tar czf /b/hvbackup-data.tgz -C /d .` |
+| Back up the catalog volume | `docker run --rm -v multi-hypervisor-backup_hvbackup-data:/d -v "$PWD":/b alpine tar czf /b/hvbackup-data.tgz -C /d .` |
 
 The volume name is prefixed with the Compose project name, the directory name
 by default; `docker volume ls` shows it.
@@ -454,8 +457,8 @@ or LSI Logic), on a host that sees the datastores of the VMs it will back up.
 2. On the VM, as root:
 
    ```bash
-   git clone https://gitlab.onthenile.net/brainchill/hypervisor-backup-server.git
-   cd hypervisor-backup-server
+   git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
+   cd Multi-Hypervisor-Backup
    sudo ./packaging/get.sh --agent          # or ./packaging/install.sh --agent
    sudo nano /etc/hvbackup/agent.conf       # paste HVB_URL and HVB_PROXY_TOKEN
    sudo systemctl enable --now hvbackup-agent
@@ -472,7 +475,7 @@ on the network, otherwise it takes the original's DHCP lease.
 The CLI is a client of the API and runs anywhere Python 3.12 is available:
 
 ```bash
-python3 -m venv ~/.local/hvbackup && ~/.local/hvbackup/bin/pip install git+https://gitlab.onthenile.net/brainchill/hypervisor-backup-server.git
+python3 -m venv ~/.local/hvbackup && ~/.local/hvbackup/bin/pip install git+https://github.com/brainchillz/Multi-Hypervisor-Backup.git
 ln -s ~/.local/hvbackup/bin/hvbackup ~/.local/bin/hvbackup
 ```
 
@@ -498,7 +501,7 @@ token, except for the server-side commands `init-admin`, `server` and `agent`.
 
 | | Native | Docker |
 |---|---|---|
-| Upgrade | `git pull && sudo ./packaging/install.sh` (or `get.sh` again); the service restarts, config and data stay | `git pull && docker compose up -d --build` |
+| Upgrade | `git pull && sudo ./packaging/install.sh` (or `get.sh` again); the service restarts, config and data stay | `git pull && docker compose pull && docker compose up -d` (or `--build`) |
 | Move to another host | stop the service; copy `/var/lib/hvbackup`, `/etc/hvbackup` and the repository; install on the new host; start. The catalog, `secret.key` and the certificate travel together, so proxies and nodes keep working if the URL stays the same | same with the `hvbackup-data` volume and the repository directory |
 | Uninstall | `sudo systemctl disable --now hvbackup; sudo rm -rf /opt/hvbackup /etc/systemd/system/hvbackup.service`; remove `/etc/hvbackup`, `/var/lib/hvbackup` and the repository when the backups are no longer needed | `docker compose down -v`; the repository directory is untouched |
 
@@ -526,7 +529,6 @@ automatically on start.
 | `python3-venv is required` | `apt install python3-venv` |
 | `the service did not start` | `journalctl -u hvbackup -n 50`: usually `HVB_REPO` not writable by `hvbackup` or the port in use |
 | Service runs but the repository is read-only | The directory is not owned by `hvbackup`, or it sits under `/etc` or `/usr`, which the unit mounts read-only |
-| `curl … get.sh` returns an HTML login page | The project is private; clone with credentials and run `./packaging/get.sh` from the checkout |
 | Browser warns about the certificate | Expected with the generated certificate; install your own ([4.6](#46-certificate)) |
 | Proxy deployment fails with `the agent has not reported in` | The VM could not reach apt, PyPI or `HVB_URL`; read `/var/log/hvbackup-bootstrap.log` on its console |
 

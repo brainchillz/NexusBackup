@@ -4,7 +4,7 @@
 services:
   hvbackup:
     build: .
-    image: hvbackup:latest
+    image: ghcr.io/brainchillz/multi-hypervisor-backup:latest
     container_name: hvbackup
     restart: unless-stopped
     ports:

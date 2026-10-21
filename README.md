@@ -5,8 +5,8 @@ standalone ESXi host into one deduplicated store, without agents in the guests
 and without any VMware SDK, and restores them as new VMs. Backups are
 incremental forever: after the first full, only changed blocks cross the
 network. Everything is driven by a REST API; the web UI and the CLI are clients
-of it. Proxmox support, a vCenter plug-in and cross-platform conversion are
-planned. Tested against vCenter 8.0.3.
+of it. Cross-platform conversion is planned. Tested against vCenter 8.0.3 and
+Proxmox VE 9.2.
 
 **How it works.** For each VM the server takes a snapshot (quiesced when VMware
 Tools runs), asks vSphere's Changed Block Tracking which blocks changed since the
@@ -19,7 +19,9 @@ content hash, so identical blocks across VMs and across restore points are kept
 once. Measured through the proxy: over 360 MiB/s including hashing and
 compression.
 
-Design and test results: [PLAN.md](PLAN.md).
+Design and test results: [PLAN.md](PLAN.md). Install guide: [docs/INSTALL.md](docs/INSTALL.md).
+
+![Dashboard](docs/images/dashboard.png)
 
 ## Requirements
 
@@ -43,26 +45,32 @@ Or use an administrator account while evaluating.
 
 ## Install
 
-Pick one of the three. All three end up with the same server, listening on
-`https://<host>:8460` with a self-signed certificate.
-
-### A. Native, from a source checkout
+Full guide with screenshots: [docs/INSTALL.md](docs/INSTALL.md). The short
+version, on a fresh Ubuntu or Debian machine:
 
 ```bash
 git clone https://gitlab.onthenile.net/brainchill/hypervisor-backup-server.git
 cd hypervisor-backup-server
-sudo ./packaging/install.sh
+sudo ./packaging/get.sh --repo /srv/hvbackup --url https://backup.example.net:8460
+```
+
+`get.sh` installs the prerequisites, runs the native installer, waits for the
+service and creates the `admin` account, printing its password once (set
+`HVB_ADMIN_PASSWORD` to choose it). Add `--docker` for the Docker Compose
+install, `--agent` on a proxy VM. Rerun it to upgrade. The three ways to
+install all end up with the same server on `https://<host>:8460`:
+
+### A. Native, from a source checkout
+
+```bash
+sudo ./packaging/install.sh --repo /srv/hvbackup --url https://backup.example.net:8460 --admin admin
 ```
 
 This creates the `hvbackup` user, a virtualenv in `/opt/hvbackup/venv`,
-`/etc/hvbackup/hvbackup.conf`, `/var/lib/hvbackup`, and starts the `hvbackup`
-systemd service. Edit `/etc/hvbackup/hvbackup.conf` to point `HVB_REPO` at your
-backup directory, then:
-
-```bash
-sudo systemctl restart hvbackup
-sudo -u hvbackup HVB_CONFIG=/etc/hvbackup/hvbackup.conf /opt/hvbackup/venv/bin/hvbackup init-admin admin
-```
+`/etc/hvbackup/hvbackup.conf` with the given repository and URL,
+`/var/lib/hvbackup`, starts the `hvbackup` systemd service and creates the
+admin. Without options it writes a template configuration to edit by hand;
+`--port`, `--no-start` and `--help` exist too.
 
 ### B. Debian package
 
@@ -76,8 +84,9 @@ sudo apt install ./dist/hvbackup_*.deb
 ```
 
 The package installs the same files and starts the service. Then set
-`HVB_REPO` in `/etc/hvbackup/hvbackup.conf`, restart, and run `init-admin` as
-above. Installed on a proxy VM where `/etc/hvbackup/agent.conf` already exists,
+`HVB_REPO` and `HVB_URL` in `/etc/hvbackup/hvbackup.conf`, restart, and run
+`sudo -u hvbackup HVB_CONFIG=/etc/hvbackup/hvbackup.conf /opt/hvbackup/venv/bin/hvbackup init-admin admin`.
+Installed on a proxy VM where `/etc/hvbackup/agent.conf` already exists,
 the same package enables `hvbackup-agent` instead of the server.
 
 ### C. Docker Compose
@@ -93,7 +102,8 @@ docker compose exec hvbackup hvbackup init-admin admin
 named volume `hvbackup-data`. In Docker, every CLI command runs as
 `docker compose exec hvbackup hvbackup ...`. The container runs as root so it
 can write to whatever host directory you mount; files in the repository are
-owned by root.
+owned by root. Your own certificate goes in through a Compose override, see
+the guide.
 
 ### First run
 
@@ -476,10 +486,10 @@ Server logs: `journalctl -u hvbackup` (native) or `docker compose logs -f`
 
 | Method | Upgrade | Uninstall |
 |---|---|---|
-| Native | `git pull && sudo ./packaging/install.sh` (restarts the service, keeps config and data) | `sudo systemctl disable --now hvbackup; sudo rm -rf /opt/hvbackup /etc/systemd/system/hvbackup.service`; remove `/etc/hvbackup`, `/var/lib/hvbackup` and the repository when you no longer need the backups |
+| Native | `git pull && sudo ./packaging/install.sh` or `sudo ./packaging/get.sh` (restarts the service, keeps config, accounts and data) | `sudo systemctl disable --now hvbackup; sudo rm -rf /opt/hvbackup /etc/systemd/system/hvbackup.service`; remove `/etc/hvbackup`, `/var/lib/hvbackup` and the repository when you no longer need the backups |
 | Debian package | Build the new `.deb`, `sudo apt install ./dist/hvbackup_*.deb` | `sudo apt remove hvbackup`; data and config stay until you delete them |
 | Docker | `git pull && docker compose up -d --build` | `docker compose down`; add `-v` to drop the `hvbackup-data` volume; the repository directory on the host is untouched |
-| Proxy agent | Same as native, with `--agent` | `sudo systemctl disable --now hvbackup-agent; sudo rm -rf /opt/hvbackup /etc/hvbackup` |
+| Proxy agent | Same as native, with `--agent` (deployed proxies: redeploy, or run the agent install on them) | `sudo systemctl disable --now hvbackup-agent; sudo rm -rf /opt/hvbackup /etc/hvbackup` |
 
 The catalog schema is created and extended automatically on start.
 

@@ -16,6 +16,24 @@ Next, in order:
 1. **Soak and harden, two weeks.** Let the nightly job run, add real VMs once
    comfortable, one test restore a week, fix what the logs show. Known items:
    a dedicated least-privilege vCenter role instead of administrator.
+1g. **Install guide and bootstrap installer** (done 2026-10-21).
+   `docs/INSTALL.md`: planning (sizing, repository storage, ports, accounts),
+   native install step by step, Docker Compose step by step (own certificate
+   through a Compose override, catalog volume backup), Debian package, first
+   run walkthrough with screenshots (`docs/images/`, taken headlessly from
+   serenity and the lab Proxmox UI), Proxmox nodes, proxy by hand, CLI,
+   upgrade/move/uninstall, production checklist. `packaging/install.sh` grew
+   `--repo --url --port --admin --no-start` (idempotent, waits for the port,
+   admin password from `HVB_ADMIN_PASSWORD`, a prompt, or generated and
+   printed once). New `packaging/get.sh` bootstraps a fresh machine: distro
+   prerequisites, clone into `/opt/hvbackup/src` (or `--source`), then
+   `install.sh`; `--docker` writes `.env`, builds and starts the stack and
+   creates the admin; `--agent` for proxies; a rerun is an upgrade and
+   touches no account. Tested in throwaway Ubuntu 24.04 containers (fresh,
+   rerun, piped clone path, agent) and with Docker Compose on the dev host;
+   serenity upgraded through it. The GitLab project is private, so the
+   `curl | bash` form works only after the project is made public; the
+   guide says to clone first.
 1f. **Proxy VM deployed from the UI** (built 2026-10-20). Proxies → Deploy
    proxy VM, `POST /proxies/deploy`, `hvbackup proxies deploy`. The server
    fetches the Ubuntu 24.04 cloud OVA once (SHA256 from the publisher's
@@ -566,8 +584,9 @@ directory, cron scheduler, task runner, local accounts, tokens and four
 roles, CLI with `--json` and `status --tsv`, web UI (13 pages), vSphere
 provider with hot-add via the proxy agent and HTTPS for powered-off VMs,
 restore through the proxy or HTTPS upload, retention, CBT-reset fallback to
-full. Packaging: native `install.sh`, `.deb` built in a container, Docker
-Compose. Installed on serenity as a systemd service with the repository on
+full. Packaging: native `install.sh` (options for repository, URL, port,
+admin), bootstrap `get.sh`, `.deb` built in a container, Docker Compose;
+`docs/INSTALL.md` with screenshots. Installed on serenity as a systemd service with the repository on
 `/volume01/hvbackup` and a nightly job on the lab test VMs.
 Not yet done from the original scope: server-driven deployment of the proxy
 appliance (today: `install.sh --agent` on any small Linux VM).

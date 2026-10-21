@@ -4,8 +4,8 @@ import tempfile
 
 import pytest
 
-os.environ['HVB_DATA_DIR'] = tempfile.mkdtemp(prefix='hvb-test-data-')
-os.environ['HVB_REPO'] = tempfile.mkdtemp(prefix='hvb-test-repo-')
+os.environ.setdefault('HVB_DATA_DIR', tempfile.mkdtemp(prefix='hvb-test-data-'))  # conftest sets these first
+os.environ.setdefault('HVB_REPO', tempfile.mkdtemp(prefix='hvb-test-repo-'))
 
 from hvbackup.core import auth, uuids  # noqa: E402
 from hvbackup.providers import base  # noqa: E402

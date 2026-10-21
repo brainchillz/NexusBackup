@@ -233,6 +233,9 @@ async function restoreDialog(rp, vmName, connectionId) {
   try { detail = await api('GET', `/api/v1/restore-points/${rp.id}`); } catch (e) { /* older point */ }
   const spec = detail.spec || {};
   const place = spec.placement || {};
+  const srcConn = conns.find(c => c.id === connectionId) || {};
+  const srcPlatform = detail.platform || (srcConn.type === 'proxmox' ? 'proxmox' : 'vmware');
+  const platformOf = c => (c && c.type === 'proxmox') ? 'proxmox' : 'vmware';
   const srcDs = (spec.disks && spec.disks[0] && spec.disks[0].datastore) || (place.datastores && place.datastores[0]) || '';
   const srcNets = [...new Set((spec.nics || []).map(n => n.network || ''))];
   const need = rp.allocated_bytes || 0;
@@ -241,12 +244,14 @@ async function restoreDialog(rp, vmName, connectionId) {
     body: `<p class="muted">Restore point ${esc(rp.id)} from ${esc(fmtTime(rp.created))} (${esc(rp.kind)}, ${esc(fmtBytes(rp.allocated_bytes))} allocated)${place.host ? `, taken on ${esc(place.host)} / ${esc(srcDs)}` : ''}.</p>
       <label class="f"><span>New VM name</span><input name="name" value="${esc(vmName + '-restored')}"></label>
       <div class="row">
-        <label class="f"><span>Target connection</span><select name="connection_id">${conns.filter(c => c.type !== 'proxmox').map(c => `<option value="${c.id}" ${c.id === connectionId ? 'selected' : ''}>${esc(c.name)} (${esc(c.type)})</option>`).join('')}</select></label>
+        <label class="f"><span>Target connection</span><select name="connection_id">${conns.map(c => `<option value="${c.id}" ${c.id === connectionId ? 'selected' : ''}>${esc(c.name)} (${esc(c.type)})</option>`).join('')}</select></label>
         <label class="f"><span>Host</span><select name="host"></select></label>
         <label class="f"><span>Datastore</span><select name="datastore"></select></label>
       </div>
       <div class="row"><label class="f"><span>VM folder</span><select name="folder"><option value="">(root VM folder)</option></select></label><div id="netmap" class="row" style="flex:2"></div></div>
       <p class="muted" id="drnote" style="display:none"></p>
+      <div id="convnote" style="display:none"><p class="muted"><b>Conversion.</b> This restore point is a <span id="convfrom"></span> image and the target is <span id="convto"></span>. The server first makes a <span id="convto2"></span> restore point of it (Linux guests: drivers in the initramfs, interface names pinned, a few MiB of new blocks), keeps it for later restores, then restores that. The copy boots with the target's own disk and network devices.</p>
+      <label class="c"><input type="checkbox" name="install_tools"> Install the target's guest tools (QEMU guest agent or open-vm-tools) on the copy's first boot; needs package repositories reachable from the copy</label></div>
       <label class="c"><input type="checkbox" name="new_identity" checked> New identity (fresh MAC addresses and BIOS UUID). Untick only when the original VM is gone.</label>
       <label class="c"><input type="checkbox" name="power_on"> Power on after restore</label>
       <p class="muted">A restored copy keeps the guest's host name, host keys and DHCP client identity. Do not run it next to the original on the same network.</p>`,
@@ -257,7 +262,7 @@ async function restoreDialog(rp, vmName, connectionId) {
         srcNets.forEach((n, i) => { const e = m.querySelector(`[name="net${i}"]`); if (e && e.value) networks[n] = e.value; });
         const body = { name: val(m, 'name'), connection_id: Number(val(m, 'connection_id')), host: val(m, 'host') || null,
           datastore: val(m, 'datastore') || null, folder: val(m, 'folder') || null, networks,
-          new_identity: val(m, 'new_identity'), power_on: val(m, 'power_on') };
+          new_identity: val(m, 'new_identity'), power_on: val(m, 'power_on'), install_tools: val(m, 'install_tools') };
         const res = await api('POST', `/api/v1/restore-points/${rp.id}/restore`, body);
         startedTask(res, 'Restore started');
       }
@@ -297,7 +302,17 @@ async function restoreDialog(rp, vmName, connectionId) {
     sel('folder').innerHTML = '<option value="">(root VM folder)</option>' + (placement.folders || []).map(f => `<option value="${esc(f.moref)}" ${cid === connectionId && f.moref === place.folder ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
     const note = m.querySelector('#drnote');
     note.style.display = cid === connectionId ? 'none' : '';
-    note.textContent = 'This is not the connection the backup came from. Only the repository is read; the source vCenter is not contacted. Check the host, datastore and networks the copy should use.';
+    note.textContent = 'This is not the connection the backup came from. Only the repository is read; the source is not contacted. Check the host, datastore and networks the copy should use.';
+    const tconn = conns.find(c => c.id === cid);
+    const tplat = platformOf(tconn);
+    const conv = m.querySelector('#convnote');
+    conv.style.display = tplat === srcPlatform ? 'none' : '';
+    m.querySelector('#convfrom').textContent = srcPlatform === 'proxmox' ? 'Proxmox' : 'VMware';
+    m.querySelector('#convto').textContent = tplat === 'proxmox' ? 'Proxmox' : 'VMware';
+    m.querySelector('#convto2').textContent = tplat === 'proxmox' ? 'Proxmox' : 'VMware';
+    m.querySelector('[name="host"]').closest('label').querySelector('span').textContent = tplat === 'proxmox' ? 'Node' : 'Host';
+    m.querySelector('[name="datastore"]').closest('label').querySelector('span').textContent = tplat === 'proxmox' ? 'Storage' : 'Datastore';
+    m.querySelector('[name="folder"]').closest('label').querySelector('span').textContent = tplat === 'proxmox' ? 'Pool' : 'VM folder';
     fillHost();
   }
   sel('connection_id').onchange = loadPlacement;

@@ -1,12 +1,13 @@
-# hvbackup
+# NexusBackup
 
-Hypervisor backup server for Linux. It backs up running VMs from vCenter or a
-standalone ESXi host into one deduplicated store, without agents in the guests
-and without any VMware SDK, and restores them as new VMs. Backups are
+Hypervisor backup server for Linux (command and package: `hvbackup`). It backs
+up running VMs from vCenter, a standalone ESXi host or a Proxmox VE cluster
+into one deduplicated store, without agents in the guests and without any
+VMware SDK, restores them as new VMs, and converts Linux VMs between the two
+platforms. Backups are
 incremental forever: after the first full, only changed blocks cross the
 network. Everything is driven by a REST API; the web UI and the CLI are clients
-of it. Cross-platform conversion is planned. Tested against vCenter 8.0.3 and
-Proxmox VE 9.2.
+of it. Tested against vCenter 8.0.3 and Proxmox VE 9.2.
 
 **How it works.** For each VM the server takes a snapshot (quiesced when VMware
 Tools runs), asks vSphere's Changed Block Tracking which blocks changed since the
@@ -29,6 +30,7 @@ Design and test results: [PLAN.md](PLAN.md). Install guide: [docs/INSTALL.md](do
 |---|---|
 | Backup server | Linux, Python 3.12 or newer with `python3-venv`, systemd for the native install or Docker for the container. Any filesystem for the repository (ZFS or btrfs recommended). Network reach to vCenter and every ESXi host on TCP 443. Proxies and browsers reach the server on TCP 8460. |
 | Proxy VM (one per vSphere cluster or standalone host) | A small Linux VM on that vSphere with access to the datastores of the VMs it backs up. 2 vCPU, 2 GB RAM, Python 3.12+, a SCSI controller (ParaVirtual or LSI Logic). The agent runs as root (SCSI rescans and raw disk reads). It holds no vSphere credentials. |
+| Conversion (optional) | `virt-v2v` and `libguestfs-tools` on the backup server (native install; the installer adds them on Debian/Ubuntu). |
 | Proxmox VE | PVE 9 (backup-provider API). On every node: the plug-in from the server's installer, which adds `libnbd-bin` and a Python venv. Nodes reach the server on TCP 8460. |
 | vSphere | vCenter or ESXi 7.0 U3 or newer. A **paid or evaluation licence**: the free ESXi licence makes the API read-only, so snapshots fail. VMs you back up must not already carry snapshots named `hvbackup`. |
 
@@ -49,8 +51,8 @@ Full guide with screenshots: [docs/INSTALL.md](docs/INSTALL.md). The short
 version, on a fresh Ubuntu or Debian machine:
 
 ```bash
-git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
-cd Multi-Hypervisor-Backup
+git clone https://github.com/brainchillz/NexusBackup.git
+cd NexusBackup
 sudo ./packaging/get.sh --repo /srv/hvbackup --url https://backup.example.net:8460
 ```
 
@@ -93,7 +95,7 @@ the same package enables `hvbackup-agent` instead of the server.
 
 ```bash
 cp .env.example .env     # set HVB_URL and HVB_REPO_HOST
-docker compose up -d     # pulls ghcr.io/brainchillz/multi-hypervisor-backup; add --build to build locally
+docker compose up -d     # pulls ghcr.io/brainchillz/nexusbackup; add --build to build locally
 docker compose exec hvbackup hvbackup init-admin admin
 ```
 
@@ -113,8 +115,8 @@ the guide.
 4. Alternatively **Proxies → Register existing** for a VM you install yourself: name the proxy; the page shows a one-time token and the exact `/etc/hvbackup/agent.conf` to paste. (CLI: `hvbackup proxies add <name>`.) Then on that VM, as root:
 
    ```bash
-   git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
-   cd Multi-Hypervisor-Backup
+   git clone https://github.com/brainchillz/NexusBackup.git
+   cd NexusBackup
    sudo ./packaging/install.sh --agent
    sudo nano /etc/hvbackup/agent.conf        # paste HVB_URL and HVB_PROXY_TOKEN from step 3
    sudo systemctl enable --now hvbackup-agent
@@ -211,7 +213,8 @@ before the subcommand for raw output.
 | `jobs list\|add\|run\|delete` | Scheduled jobs | `hvbackup jobs add --name nightly --vms web01 db01 --schedule "0 2 * * *" --keep-last 14` |
 | `runs list [--limit N]` | Backup run history | `hvbackup runs list` |
 | `restore-points list [--vm <vm>]` | Restore points | `hvbackup restore-points list --vm web01` |
-| `restore <rp> --name NAME [...]` | Restore as a new VM; `--connection` (id or name, any target), `--host`, `--datastore`, `--folder`, `--network SRC=DST` (repeatable), `--power-on`, `--keep-identity`, `--wait` | `hvbackup restore 12 --name web01-restored --connection dr-site --network "VM Network=DR-VLAN30" --power-on --wait` |
+| `restore <rp> --name NAME [...]` | Restore as a new VM; `--connection` (id or name, any target, the other platform included), `--host`, `--datastore`, `--folder`, `--network SRC=DST` (repeatable), `--power-on`, `--keep-identity`, `--install-tools`, `--wait` | `hvbackup restore 12 --name web01-restored --connection dr-site --network "VM Network=DR-VLAN30" --power-on --wait` |
+| `convert <rp> --to proxmox\|vmware` | Make a restore point of the other platform ahead of time (Linux guests); `--install-tools`, `--keep-identity`, `--wait` | `hvbackup convert 12 --to proxmox --install-tools --wait` |
 | `tasks list\|show\|wait\|cancel` | Task queue and logs | `hvbackup tasks show 7` |
 | `proxies list\|add\|deploy\|image\|delete` | Proxy VMs; `deploy` builds one from the cloud image, `add` prints the token and agent.conf for one you install yourself, `image` shows the cached image | `hvbackup proxies deploy proxy-cluster1 --connection prod --network "VM Network" --wait` |
 | `users list\|add\|passwd\|delete` | Local accounts; `--role` | `hvbackup users add alice --role operator` |
@@ -304,6 +307,55 @@ removed, so a run in progress cannot lose data.
 
 The proxy only ever sees the server URL, its own token, and whatever disk the
 server attached to it. It cannot talk to vCenter.
+
+## Converting between VMware and Proxmox
+
+A restore onto a connection of the other platform converts the restore point
+first: pick a Proxmox cluster as the target of a vCenter or ESXi restore point,
+or a vCenter or ESXi target for a Proxmox one. Linux guests only in this
+release; Windows guests and containers are refused up front.
+
+What happens, on the backup server:
+
+1. Every disk of the restore point is exported read-only over NBD straight
+   from the repository and a qcow2 overlay is put on it, so the tools get a
+   writable disk and the backup stays untouched.
+2. libguestfs inspects the guest. Towards Proxmox, `virt-v2v-in-place` makes
+   it boot on KVM (virtio-scsi and virtio-net drivers in the initramfs,
+   VMware-specific pieces out); towards VMware, `virt-customize` adds the
+   `vmw_pvscsi` and `vmxnet3` drivers and regenerates the initramfs. In both
+   directions the guest's network configuration is read: a systemd `.link`
+   file pins every interface name the configuration uses (`ens192` stays
+   `ens192` on Proxmox) to the NIC's MAC address, and configurations that
+   match by MAC are rewritten to the new addresses. `--install-tools` adds a
+   first-boot install of `qemu-guest-agent` or `open-vm-tools`.
+3. Only the blocks the tools changed (typically under 100 MiB; discarded free
+   space becomes zero chunks without a read) are stored as new chunks; the
+   rest of the index is shared with the source point.
+4. The result is a normal restore point of the same VM, kind `converted`,
+   with a Proxmox config (virtio-scsi disks, virtio NICs, OVMF with an EFI
+   disk when the source used UEFI) or a vSphere spec (paravirtual SCSI,
+   vmxnet3, guest id from the detected distribution). It is kept, so the
+   next restore of the same point onto that platform skips the conversion,
+   and converted Proxmox points also appear in the Proxmox UI under the
+   storage's Backups. `hvbackup convert` does the conversion without a
+   restore.
+
+Measured on the lab: a 10 GiB Ubuntu 26.04 VM from ESXi to Proxmox in 50 s of
+fix-ups plus a 10 s read-back, 63 MiB new in the repository, booted on pve-01
+with its interface name kept, an address by DHCP and the guest agent
+installed on first boot; a 20 GiB Ubuntu 24.04 VM from Proxmox to vCenter in
+12 s plus 1 s, 34 MiB new, booted on a paravirtual SCSI controller with
+VMware Tools running.
+
+Requirements: the native install with `virt-v2v` and `libguestfs-tools`
+(the installer adds them on Debian/Ubuntu, makes the kernel readable for
+libguestfs and puts the `hvbackup` user in the `kvm` group; without `/dev/kvm`
+the fix-ups still work, several times slower). The Docker image does not
+carry libguestfs yet. New identity (the default) gives the copy fresh MAC
+addresses and UUID; the copy keeps the guest's host name and DHCP client
+identity, so do not run it next to the original on the same network. A TPM
+is not carried over and secure boot is turned off on the copy, both logged.
 
 ## Exporting a restore point as OVF/OVA
 
@@ -468,6 +520,9 @@ both.
 | `… is a template: vSphere cannot snapshot templates` | Back up now or a job hit a VM template | Convert the template to a VM, or clone it and back up the clone. Templates are not included in the plug-in VM lists. |
 | Proxmox: `cannot setup backup access without fleecing` | A backup job made in the Proxmox UI targets the hvbackup storage without fleecing | Edit the job, Advanced → enable fleecing. Jobs started from this server set it automatically. |
 | Proxmox: `vzdump reported success but the node plug-in never completed` | The node could not reach the server or the storage token is stale | On the node: `journalctl -u pvedaemon`; re-run the installer and **Register storage** (rotates the token). |
+| `conversion needs virt-v2v-in-place ... on the backup server` | A cross-platform restore on a server without libguestfs | `apt install virt-v2v libguestfs-tools`, rerun `packaging/install.sh` (kernel readability, kvm group), or convert on a native server |
+| `Windows guests are not converted in this release` / `no operating system was found` | Conversion is limited to installed Linux guests | Restore to the same platform, or wait for Windows support |
+| Converted copy boots without network | The guest configuration named an interface the conversion could not find, or matches a MAC it did not know | Check `/etc/systemd/network/70-hvbackup-*.link` in the copy; the task log lists the names found and the files rewritten |
 | `VM is powered on and no proxy is available on this connection` | No online proxy is tied to that connection | Bring a proxy online; make sure it is a VM on that vSphere. Run **Connections → Refresh** so the server matches it by BIOS UUID, or set its connection when creating it. |
 | `range read ... HTTP 500 (a running VM holds the lock; use a proxy)` | The HTTPS path was used on a running VM | Same as above: this path only works for powered-off VMs. |
 | Task log says consolidation needed or pending | ESXi has not merged the snapshot delta yet | Wait, or consolidate in vCenter (VM → Snapshots → Consolidate). The next run tolerates it. |
@@ -498,13 +553,13 @@ The catalog schema is created and extended automatically on start.
 Working in this release: vCenter, standalone ESXi and Proxmox VE 9 (VMs with
 dirty-bitmap incrementals, containers); full and incremental
 backups of running and powered-off VMs; restore as new VM, onto the source or
-any other connection (DR); OVF/OVA export; jobs, schedules, retention, GC; web
+any other connection (DR); conversion of Linux VMs between VMware and Proxmox
+in both directions; OVF/OVA export; jobs, schedules, retention, GC; web
 UI, CLI, REST API with OpenAPI; vSphere Client plug-in; Nexus Dashboard
 plug-ins (declarative and Python tiers); native, deb and Docker installs.
 
-Planned: cross-platform conversion (VMware ↔ Proxmox with guest driver
-fix-ups), Nexus SSO and OpenID
-Connect logins, encryption at rest, file-level restore. The design and the
+Planned: Windows guests in conversion (virtio driver injection), Nexus SSO and
+OpenID Connect logins, encryption at rest, file-level restore. The design and the
 Phase 0 measurements are in [PLAN.md](PLAN.md).
 
 ## Licence

@@ -84,6 +84,14 @@ CONF
     install -m 644 "$SRC/packaging/hvbackup.service" /etc/systemd/system/hvbackup.service
     systemctl daemon-reload
     if command -v apt-get >/dev/null && ! command -v qemu-img >/dev/null; then apt-get install -y -q qemu-utils >/dev/null 2>&1 || echo "note: install qemu-utils to enable OVA export"; fi
+    # cross-platform conversion (libguestfs on this host): best effort, the server works without it
+    if command -v apt-get >/dev/null && ! command -v virt-v2v-in-place >/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q virt-v2v libguestfs-tools >/dev/null 2>&1 || echo "note: install virt-v2v and libguestfs-tools to enable VMware <-> Proxmox conversion"
+    fi
+    if command -v virt-v2v-in-place >/dev/null; then
+        for k in /boot/vmlinuz-*; do [ -f "$k" ] && ! dpkg-statoverride --list "$k" >/dev/null 2>&1 && dpkg-statoverride --update --add root root 0644 "$k" >/dev/null 2>&1 || chmod 0644 "$k" 2>/dev/null; done
+        getent group kvm >/dev/null && usermod -aG kvm hvbackup
+    fi
     FRESH=1; [ -f /var/lib/hvbackup/catalog.db ] && FRESH=0
     PORTNOW=$(grep -E '^HVB_PORT=' "$CONF" | tail -1 | cut -d= -f2); URLNOW=$(grep -E '^HVB_URL=' "$CONF" | tail -1 | cut -d= -f2)
     if [ "$START" = 1 ]; then

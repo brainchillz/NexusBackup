@@ -13,7 +13,8 @@ Client side (any machine; HVB_URL + HVB_TOKEN, or ~/.config/hvbackup/client.conf
   hvbackup jobs list|add|run|delete
   hvbackup runs list
   hvbackup restore-points list [--vm <vm>]
-  hvbackup restore <rp> --name NAME [--connection C] [--host H] [--datastore DS] [--network SRC=DST]... [--power-on] [--keep-identity] [--wait]
+  hvbackup restore <rp> --name NAME [--connection C] [--host H] [--datastore DS] [--network SRC=DST]... [--power-on] [--keep-identity] [--install-tools] [--wait]
+  hvbackup convert <rp> --to proxmox|vmware [--install-tools] [--keep-identity] [--wait]   restore point for the other platform (Linux guests)
   hvbackup connections placement <id|name>      hosts, datastores and networks to restore onto
   hvbackup connections pve-setup|pve-storage <id|name>   Proxmox: node installer one-liner; register the hvbackup storage
   hvbackup tasks list|show|wait|cancel
@@ -304,6 +305,16 @@ def cmd_restore_points(args):
         ['id', 'vm_name', 'created', 'kind', 'size', 'allocated'])
 
 
+def cmd_convert(args):
+    c = Client()
+    res = c.call('POST', f'/restore-points/{args.rp}/convert', json={'target': args.to, 'new_identity': not args.keep_identity,
+                                                                     'install_tools': args.install_tools, 'name': args.name})
+    out(args, res)
+    if args.wait and not args.json:
+        t = wait_task(c, res['task_id'])
+        print(json.dumps(t.get('result', {}).get('result'), indent=2, default=str))
+
+
 def cmd_restore(args):
     c = Client()
     nets = {}
@@ -313,7 +324,8 @@ def cmd_restore(args):
         a, b = m.split('=', 1)
         nets[a] = b
     body = {'name': args.name, 'power_on': args.power_on, 'new_identity': not args.keep_identity, 'host': args.host, 'datastore': args.datastore,
-            'connection_id': resolve_connection(c, args.connection), 'folder': args.folder, 'networks': nets or None}
+            'connection_id': resolve_connection(c, args.connection), 'folder': args.folder, 'networks': nets or None,
+            'install_tools': bool(getattr(args, 'install_tools', False))}
     res = c.call('POST', f'/restore-points/{args.rp}/restore', json=body)
     out(args, res)
     if args.wait and not args.json:
@@ -459,7 +471,13 @@ def main(argv=None):
     p.add_argument('--host', help='target host name as the target connection shows it'); p.add_argument('--datastore'); p.add_argument('--folder', help='VM folder moref on the target (see connections placement)')
     p.add_argument('--connection', help='target connection id or name; any connection, not only the one the backup came from')
     p.add_argument('--network', action='append', metavar='SOURCE=TARGET', help='map a source network to one on the target (repeatable)')
+    p.add_argument('--install-tools', action='store_true', help='cross-platform: install the target\'s guest tools on the copy\'s first boot')
     p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_restore)
+    p = sub.add_parser('convert', help='make a restore point of the other platform from one (Linux guests)'); p.add_argument('rp', type=int)
+    p.add_argument('--to', required=True, choices=['proxmox', 'vmware']); p.add_argument('--name', help='VM name the converted point carries')
+    p.add_argument('--keep-identity', action='store_true', help='keep the MAC addresses and UUID instead of fresh ones')
+    p.add_argument('--install-tools', action='store_true', help='install qemu-guest-agent / open-vm-tools on the copy\'s first boot')
+    p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_convert)
     p = sub.add_parser('tasks'); p.add_argument('action', choices=['list', 'show', 'wait', 'cancel']); p.add_argument('id', nargs='?', type=int); p.add_argument('--limit', type=int, default=30); p.set_defaults(fn=cmd_tasks)
     p = sub.add_parser('proxies', help='proxy VMs: list, add (register one you install yourself), deploy (the server builds one), image, delete')
     p.add_argument('action', choices=['list', 'add', 'deploy', 'image', 'delete']); p.add_argument('name', nargs='?'); p.add_argument('--connection', help='id or name')

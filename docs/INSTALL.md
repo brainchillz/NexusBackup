@@ -1,4 +1,8 @@
-# Installing hvbackup
+# Installing NexusBackup
+
+NexusBackup is the product; `hvbackup` is the name of its command, package,
+service and configuration directory, and this guide uses that name wherever a
+command or path is meant.
 
 This guide takes a fresh Linux machine to a working backup server with its first
 backup done, for the two supported ways of running it:
@@ -80,6 +84,12 @@ Client plug-in and browsers are happier with a real certificate, see
 Proxmox, `root@pam` or an API token (`user@realm!tokenid`) of a user with the
 Administrator role while evaluating.
 
+**Conversion between VMware and Proxmox** (Linux guests) runs libguestfs on
+the server: `virt-v2v` and `libguestfs-tools`, which the installer adds on
+Debian and Ubuntu. It needs a kernel the service user can read and, for
+speed, `/dev/kvm` (the installer handles both). Not available in the Docker
+image yet.
+
 **Operating system.** Tested on Ubuntu 24.04 and 26.04 and Debian 13. The
 native install needs Python 3.12 or newer and systemd. On RHEL 9 the default
 `python3` is 3.9: install `python3.12` and make it the default for the
@@ -91,8 +101,8 @@ installer, or use Docker.
 installer. On a fresh machine, as root:
 
 ```bash
-git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
-cd Multi-Hypervisor-Backup
+git clone https://github.com/brainchillz/NexusBackup.git
+cd NexusBackup
 sudo ./packaging/get.sh --repo /srv/hvbackup --url https://backup.example.net:8460
 ```
 
@@ -100,7 +110,7 @@ Or skip the clone and pipe the script; it clones into `/opt/hvbackup/src`
 itself:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/brainchillz/Multi-Hypervisor-Backup/main/packaging/get.sh \
+curl -fsSL https://raw.githubusercontent.com/brainchillz/NexusBackup/main/packaging/get.sh \
   | sudo bash -s -- --repo /srv/hvbackup --url https://backup.example.net:8460
 ```
 
@@ -173,8 +183,8 @@ sudo chown hvbackup:hvbackup /srv/hvbackup && sudo chmod 750 /srv/hvbackup
 ### 4.3 Get the code
 
 ```bash
-git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
-cd Multi-Hypervisor-Backup
+git clone https://github.com/brainchillz/NexusBackup.git
+cd NexusBackup
 git checkout main          # or a tag
 ```
 
@@ -265,8 +275,8 @@ published.
 ### 5.2 Get the code and configure
 
 ```bash
-git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
-cd Multi-Hypervisor-Backup
+git clone https://github.com/brainchillz/NexusBackup.git
+cd NexusBackup
 cp .env.example .env
 ```
 
@@ -280,7 +290,7 @@ HVB_REPO_HOST=/srv/hvbackup                # host directory for the repository
 `compose.yml` publishes port 8460, mounts `HVB_REPO_HOST` at
 `/var/lib/hvbackup/repo` and keeps the catalog, secrets and certificate in the
 named volume `hvbackup-data`. The image is
-`ghcr.io/brainchillz/multi-hypervisor-backup`, built by the project's CI for
+`ghcr.io/brainchillz/nexusbackup`, built by the project's CI for
 every release; `docker compose up -d` pulls it, `--build` builds it from the
 checkout instead.
 
@@ -306,7 +316,7 @@ sudo ./packaging/get.sh --docker --repo /srv/hvbackup --url https://backup.examp
 | Restart | `docker compose restart` |
 | Upgrade | `git pull && docker compose pull && docker compose up -d` (or `--build`) |
 | Stop | `docker compose down` (data and repository stay) |
-| Back up the catalog volume | `docker run --rm -v multi-hypervisor-backup_hvbackup-data:/d -v "$PWD":/b alpine tar czf /b/hvbackup-data.tgz -C /d .` |
+| Back up the catalog volume | `docker run --rm -v nexusbackup_hvbackup-data:/d -v "$PWD":/b alpine tar czf /b/hvbackup-data.tgz -C /d .` |
 
 The volume name is prefixed with the Compose project name, the directory name
 by default; `docker volume ls` shows it.
@@ -457,8 +467,8 @@ or LSI Logic), on a host that sees the datastores of the VMs it will back up.
 2. On the VM, as root:
 
    ```bash
-   git clone https://github.com/brainchillz/Multi-Hypervisor-Backup.git
-   cd Multi-Hypervisor-Backup
+   git clone https://github.com/brainchillz/NexusBackup.git
+   cd NexusBackup
    sudo ./packaging/get.sh --agent          # or ./packaging/install.sh --agent
    sudo nano /etc/hvbackup/agent.conf       # paste HVB_URL and HVB_PROXY_TOKEN
    sudo systemctl enable --now hvbackup-agent
@@ -475,7 +485,7 @@ on the network, otherwise it takes the original's DHCP lease.
 The CLI is a client of the API and runs anywhere Python 3.12 is available:
 
 ```bash
-python3 -m venv ~/.local/hvbackup && ~/.local/hvbackup/bin/pip install git+https://github.com/brainchillz/Multi-Hypervisor-Backup.git
+python3 -m venv ~/.local/hvbackup && ~/.local/hvbackup/bin/pip install git+https://github.com/brainchillz/NexusBackup.git
 ln -s ~/.local/hvbackup/bin/hvbackup ~/.local/bin/hvbackup
 ```
 

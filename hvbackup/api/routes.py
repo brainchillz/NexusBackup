@@ -422,7 +422,7 @@ def runs(limit: int = 100, vm_id: Optional[int] = None, user=Depends(current_use
 
 @r.get('/restore-points')
 def restore_points(vm_id: Optional[int] = None, user=Depends(current_user)):
-    q = 'SELECT rp.id,rp.vm_id,rp.run_id,rp.created,rp.size_bytes,rp.allocated_bytes,rp.kind,v.name AS vm_name, v.connection_id FROM restore_points rp JOIN vms v ON v.id=rp.vm_id WHERE rp.deleted=0'
+    q = 'SELECT rp.id,rp.vm_id,rp.run_id,rp.created,rp.size_bytes,rp.allocated_bytes,rp.kind,rp.platform,rp.source_rp_id,v.name AS vm_name, v.connection_id FROM restore_points rp JOIN vms v ON v.id=rp.vm_id WHERE rp.deleted=0'
     args = []
     if vm_id:
         q += ' AND rp.vm_id=?'; args.append(vm_id)
@@ -462,6 +462,7 @@ class RestoreIn(BaseModel):
     datastore: Optional[str] = None
     folder: Optional[str] = None
     networks: Optional[dict[str, str]] = None
+    install_tools: bool = False  # cross-platform restores: install the target's guest tools on the copy's first boot
 
 
 @r.post('/restore-points/{rp_id}/restore')
@@ -469,6 +470,27 @@ def restore(rp_id: int, body: RestoreIn, user=Depends(require('restore'))):
     db.audit(user['username'], 'restore', f'{rp_id} -> {body.name}')
     return {'task_id': tasks.create('restore', subject=body.name or f'rp {rp_id}', created_by=user['username'],
                                     restore_point_id=rp_id, options=body.model_dump())}
+
+
+class ConvertIn(BaseModel):
+    """Make a restore point of the other platform from this one (Linux guests). The result is a
+    normal restore point of the same VM, restorable from here or, for Proxmox, from the
+    Proxmox UI. A cross-platform restore does this by itself; this is for converting ahead."""
+    target: str = Field(pattern='^(proxmox|vmware)$')
+    new_identity: bool = True
+    install_tools: bool = False
+    name: Optional[str] = None
+
+
+@r.post('/restore-points/{rp_id}/convert')
+def convert_rp(rp_id: int, body: ConvertIn, user=Depends(require('restore'))):
+    with db.conn() as c:
+        rp = c.execute('SELECT rp.id, v.name FROM restore_points rp JOIN vms v ON v.id=rp.vm_id WHERE rp.id=? AND rp.deleted=0', (rp_id,)).fetchone()
+    if not rp:
+        raise HTTPException(404)
+    db.audit(user['username'], 'convert', f'{rp_id} -> {body.target}')
+    return {'task_id': tasks.create('convert', subject=f'{rp["name"]} -> {body.target}', created_by=user['username'],
+                                    restore_point_id=rp_id, target=body.target, options=body.model_dump())}
 
 
 # ── exports (OVF/OVA copies of restore points; read-only on the backup) ──

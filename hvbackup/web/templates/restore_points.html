@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
       { h: 'ID', f: r => esc(r.id), cls: 'num' },
       { h: 'VM', f: r => `<a href="/vms/${r.vm_id}">${esc(r.vm_name)}</a>` },
       { h: 'Created', f: r => esc(fmtTime(r.created)) + ` <span class="muted">${esc(ago(r.created))}</span>` },
-      { h: 'Kind', f: r => esc(r.kind) },
+      { h: 'Kind', f: r => r.kind === 'converted' ? `<span title="converted from restore point ${esc(r.source_rp_id)}">converted → ${esc(r.platform)}</span>` : esc(r.kind) },
       { h: 'Disk size', f: r => esc(fmtBytes(r.size_bytes)), cls: 'num' },
       { h: 'Allocated', f: r => esc(fmtBytes(r.allocated_bytes)), cls: 'num' },
       { h: '', f: r => (can('restore') ? `<button class="btn sm primary" data-a="restore" data-id="${r.id}">Restore…</button> <button class="btn sm" data-a="export" data-id="${r.id}" title="Write an OVA copy of this restore point; the backup is untouched">Export OVA</button> ` : '') + (can('operator') ? `<button class="btn sm danger" data-a="del" data-id="${r.id}">Delete</button>` : '') },

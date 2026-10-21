@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hvbackup"
 version = "0.1.0"
-description = "Hypervisor backup server: backs up running VMs from vCenter, ESXi and Proxmox into one deduplicated store on Linux"
+description = "NexusBackup: hypervisor backup server that backs up running VMs from vCenter, ESXi and Proxmox into one deduplicated store on Linux, restores and converts them"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}

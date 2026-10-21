@@ -336,6 +336,17 @@ def restore(task, restore_point_id, options):
     cr = connection(conn_id)
     if cr['type'] not in ('vcenter', 'esxi', 'proxmox'):
         raise RuntimeError(f'restore to a {cr["type"]} connection is not supported yet')
+    # a restore onto the other platform is a conversion first: the converted restore point
+    # (kept, so the next restore of the same point is immediate) then restores normally
+    from ..store.chunks import repo
+    from . import convert
+    src_platform = repo().read_manifest(rp['manifest']).get('platform') or 'vmware'
+    target_platform = 'proxmox' if cr['type'] == 'proxmox' else 'vmware'
+    if src_platform != target_platform:
+        task.log(f'restore point {rp["id"]} is a {src_platform} image and {cr["name"]} is {target_platform}: converting first')
+        new_id = convert.ensure_converted(task, rp, target_platform, options)
+        with db.conn() as c:
+            rp = db.row_to_dict(c.execute('SELECT * FROM restore_points WHERE id=?', (new_id,)).fetchone())
     # The source connection is never contacted: a restore reads only the repository, so a
     # vCenter that no longer exists is no obstacle to restoring its VMs elsewhere.
     with open_api(cr) as api:
@@ -368,6 +379,8 @@ def register_tasks():
     tasks.register('gc', gc)
     from . import proxy_deploy
     tasks.register('deploy_proxy', proxy_deploy.deploy_proxy)
+    from . import convert
+    tasks.register('convert', convert.convert_task)
 
 
 def scheduler_run_job(job_id, created_by):

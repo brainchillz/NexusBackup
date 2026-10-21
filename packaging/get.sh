@@ -2,7 +2,7 @@
 # hvbackup bootstrap installer: installs the prerequisites, fetches the source, and runs the
 # native installer (or brings the Docker Compose stack up). One command on a fresh machine:
 #
-#   curl -fsSL https://raw.githubusercontent.com/brainchillz/Multi-Hypervisor-Backup/main/packaging/get.sh | sudo bash -s -- [options]
+#   curl -fsSL https://raw.githubusercontent.com/brainchillz/NexusBackup/main/packaging/get.sh | sudo bash -s -- [options]
 #   (or, with a checkout already on disk:)   sudo ./packaging/get.sh [options]
 #
 # Options:
@@ -18,7 +18,7 @@
 # The source lands in /opt/hvbackup/src (or stays where --source points) so that `get.sh` can be rerun to upgrade.
 set -euo pipefail
 genpw() { head -c 300 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20; }
-GIT_URL="${HVB_GIT_URL:-https://github.com/brainchillz/Multi-Hypervisor-Backup.git}"
+GIT_URL="${HVB_GIT_URL:-https://github.com/brainchillz/NexusBackup.git}"
 REF=main; SRC=; MODE=native; REPO=; URL=; ADMIN=
 while [ $# -gt 0 ]; do
     case "$1" in

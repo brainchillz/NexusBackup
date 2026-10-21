@@ -731,7 +731,7 @@ def _restore_into(task, api, rp, options, proxy_row, rep, manifest, spec, cs, na
         elif net is not None:
             nic.backing = vim.vm.device.VirtualEthernetCard.NetworkBackingInfo(deviceName=net.name, network=net)
         nic.connectable = vim.vm.device.VirtualDevice.ConnectInfo(startConnected=n.get('connected', True), allowGuestControl=True)
-        if options.get('new_identity', True):
+        if options.get('new_identity', True) and not n.get('mac_fixed'):
             nic.addressType = 'generated'
         else:
             nic.addressType = 'manual'

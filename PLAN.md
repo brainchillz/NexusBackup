@@ -1,7 +1,7 @@
 # Cross-Hypervisor VM Backup and Conversion Server — Plan
 
 Status: draft, 2026-10-20
-Working name: pending (referred to as "the server" below)
+Name: NexusBackup (command and package `hvbackup`; "the server" below)
 
 ## 0. Status and next steps (2026-10-20)
 
@@ -32,7 +32,8 @@ Next, in order:
    touches no account. Tested in throwaway Ubuntu 24.04 containers (fresh,
    rerun, piped clone path, agent) and with Docker Compose on the dev host;
    serenity upgraded through it. The public mirror on GitHub
-   (brainchillz/Multi-Hypervisor-Backup) makes the `curl | bash` form work;
+   (brainchillz/NexusBackup, first published as Multi-Hypervisor-Backup) makes
+   the `curl | bash` form work;
    `tools/gate.py` (forbidden terms, allowed identities, no co-author
    trailers, whole history and tree; lists kept outside the repository and
    in the GitHub secrets) runs before every push there (`tools/publish.sh`,
@@ -156,14 +157,21 @@ Next, in order:
    and env); zstd contexts are not thread-safe; qemu-server stats the restore
    source so an NBD URI alone is not enough; fleecing is mandatory and needs
    an explicit storage; row_to_dict parses *_json columns into bare names.
-   Not yet: cross-platform restore (Phase 5), privileged CT restore (API
-   limit), file-tree dedup for containers (tar stream now).
+   Not yet: privileged CT restore (API limit), file-tree dedup for
+   containers (tar stream now).
 4. **Phase 4, SSO.** Nexus assertion, generic OIDC, vCenter and Proxmox
    session mapping. Waits for both plug-ins so all four doors are tested
    together.
-5. **Phase 5, conversion.** virt-v2v in place for VMware to Proxmox, our own
-   fixup module for the reverse, KVM test boot on serenity (needs the
-   libguestfs tool set installed there).
+5. **Phase 5, conversion** (Linux guests built 2026-10-21, see §8). A
+   cross-platform restore converts first: NBD export of the point from the
+   repository (`core/nbd.py`), qcow2 overlay, libguestfs fix-ups on the
+   server (`virt-v2v-in-place` towards KVM, `virt-customize` towards
+   VMware, interface names pinned by `.link` files, MAC-matched configs
+   rewritten, first-boot tool install), `qemu-img map` of the overlay to
+   store only changed chunks, a new `converted` restore point with a
+   synthesized Proxmox config (`#qmdump#map` hints, `drive-scsiN` volume
+   keys, OVMF + efidisk added after restore) or a vSphere spec. Windows
+   (virtio driver injection) and a KVM test boot are still open.
 
 Open decisions for the owner: which real VMs join the nightly jobs during the
 soak (vSphere and Proxmox). SSO (4) is next, then conversion (5).
@@ -634,11 +642,25 @@ Nexus assertion relying party, generic OIDC, vCenter and Proxmox session
 mapping, role mapping config.
 Exit criteria: one person reaches the same account by all four doors.
 
-### Phase 5 — Conversion
-Overlay staging, VMware → Proxmox via virt-v2v, Proxmox → VMware fixup
-module, test boot, pre-flight warnings.
-Exit criteria: round trip a Windows Server and a Linux VM in both directions
-with working networking and guest agent.
+### Phase 5 — Conversion (Linux guests built 2026-10-21)
+Built: `core/convert.py` + `core/nbd.py`. Restore dispatcher converts when the
+target platform differs from the point's; `POST /restore-points/{id}/convert`
+and `hvbackup convert` convert ahead; the restore dialog offers every
+connection and explains the conversion; `restore_points.platform` and
+`source_rp_id` columns; converted Proxmox points are listed as archives in
+the Proxmox UI (synthetic vmid 900000000 + source point). Proven on the lab:
+matt-test1-dr (Ubuntu 26.04, ESXi) to pve-01 in 50 s + 10 s, 63 MiB new,
+booted with `ens192` kept, DHCP address, guest agent from first boot (verified
+through `qm agent`); hvb-pve-test (Ubuntu 24.04 cloud image) to vCenter in
+12 s + 1 s, 34 MiB new, booted on pvscsi with VMware Tools running. Lessons:
+qemu-server restores only drives named by `#qmdump#map:<virtdev>:drive-<virtdev>::raw:`
+hints and keys archive volumes `drive-scsiN`; virt-v2v trims the filesystem,
+so zero extents of the overlay must become zero chunks without a read;
+libguestfs needs a readable kernel and the kvm group for the service user.
+Open: Windows (virtio-win injection, hivex), a KVM test boot before the
+restore, the Docker image without libguestfs, privileged containers.
+Exit criteria for the full phase: round trip a Windows Server and a Linux VM
+in both directions with working networking and guest agent.
 
 ### Phase 6 — Hardening and extras
 Encryption at rest, verification jobs, VDDK accelerator, file-level restore

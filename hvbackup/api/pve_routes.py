@@ -301,19 +301,31 @@ async def backup_finish(run_id: int, request: Request, proxy=Depends(current_pro
 # ── archives: the catalog as Proxmox sees it ─────────────────────────
 def _archives(vmid=None):
     with db.conn() as c:
-        rows = c.execute('''SELECT rp.id, rp.run_id, rp.created, rp.size_bytes, rp.allocated_bytes, rp.kind, v.name, v.moref, c.name AS cname
+        rows = c.execute('''SELECT rp.id, rp.run_id, rp.created, rp.size_bytes, rp.allocated_bytes, rp.kind, rp.platform, rp.spec_json,
+                                   v.name, v.moref, c.name AS cname, c.type AS ctype
                             FROM restore_points rp JOIN vms v ON v.id=rp.vm_id JOIN connections c ON c.id=v.connection_id
-                            WHERE rp.deleted=0 AND rp.run_id IS NOT NULL AND c.type='proxmox' AND rp.manifest!='' ORDER BY rp.id''').fetchall()
+                            WHERE rp.deleted=0 AND rp.run_id IS NOT NULL AND rp.manifest!=''
+                              AND (rp.platform='proxmox' OR (rp.platform IS NULL AND c.type='proxmox')) ORDER BY rp.id''').fetchall()
     out = []
     for x in rows:
-        if '/' not in (x['moref'] or ''):
-            continue
-        vmtype, vid = x['moref'].split('/', 1)
-        if vmtype not in ('qemu', 'lxc') or (vmid is not None and int(vid) != int(vmid)):
+        if x['platform'] == 'proxmox' and x['ctype'] != 'proxmox':
+            # converted from another platform: the archive's ids live in the spec
+            try:
+                sp = json.loads(x['spec_json'] or '{}')
+            except ValueError:
+                sp = {}
+            vmtype, vid = sp.get('vmtype') or 'qemu', str(sp.get('vmid') or 0)
+            origin = f'converted from {(sp.get("converted_from") or {}).get("platform") or "?"}'
+        else:
+            if '/' not in (x['moref'] or ''):
+                continue
+            vmtype, vid = x['moref'].split('/', 1)
+            origin = x['cname']
+        if vmtype not in ('qemu', 'lxc') or not int(vid) or (vmid is not None and int(vid) != int(vmid)):
             continue
         out.append({'volname': proxmox.volname_for(vmtype, int(vid), x['run_id']), 'vmid': int(vid), 'vmtype': vmtype,
                     'ctime': int(x['created']), 'size': x['allocated_bytes'], 'restore_point': x['id'], 'run_id': x['run_id'],
-                    'notes': f'{x["name"]} · {x["kind"]} · hvbackup restore point {x["id"]} ({x["cname"]})'})
+                    'notes': f'{x["name"]} · {x["kind"]} · hvbackup restore point {x["id"]} ({origin})'})
     return out
 
 

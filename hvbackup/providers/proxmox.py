@@ -430,7 +430,10 @@ def restore_vm(task, api: Proxmox, cr, rp, options):
     src_name = spec.get('name') or f'{vmtype} {src_vmid}'
     name = options.get('name') or src_name
     task.log(f'restoring {src_name} ({vmtype} {src_vmid}, restore point {rp["id"]}) as {vmtype} {vmid} {name!r} on {node} / {storage} from {archive}')
-    unique = bool(options.get('new_identity', True))
+    converted = bool(spec.get('converted_from'))
+    # a converted point already carries fresh MACs and UUID (pinned inside the guest), so
+    # Proxmox must not regenerate them
+    unique = bool(options.get('new_identity', True)) and not converted
     if vmtype == 'qemu':
         upid = api.post(f'/nodes/{node}/qemu', vmid=vmid, archive=archive, storage=storage, unique=unique)
     else:
@@ -447,17 +450,28 @@ def restore_vm(task, api: Proxmox, cr, rp, options):
     if vmtype == 'lxc' and name != src_name:
         changes['hostname'] = name
     mapping = options.get('networks') or {}
+    cfg = api.get(f'/nodes/{node}/{vmtype}/{vmid}/config') if (mapping or converted) else {}
     if mapping:
-        cfg = api.get(f'/nodes/{node}/{vmtype}/{vmid}/config')
+        by_key = {n.get('key'): n.get('network', '') for n in spec.get('nics') or []}
         for key, val in cfg.items():
             if NET_KEY_RE.match(key):
                 first, opts = parse_kv(val)
                 src = opts.get('bridge', '')
-                if src in mapping and mapping[src] and mapping[src] != src:
-                    opts['bridge'] = mapping[src]
+                # converted points name the source platform's network per NIC, not a bridge
+                dst = mapping.get(src) or mapping.get(by_key.get(key, ''), '')
+                if dst and dst != src:
+                    opts['bridge'] = dst
                     changes[key] = ','.join(([first] if first else []) + [f'{k}={v}' for k, v in opts.items()])
+    if converted and vmtype == 'qemu' and spec.get('firmware') == 'efi' and 'efidisk0' not in cfg:
+        # the archive carries no EFI vars disk; give the copy one (initialised from OVMF_VARS)
+        changes['efidisk0'] = f'{storage}:1,efitype=4m,pre-enrolled-keys=0'
     if changes:
-        api.put(f'/nodes/{node}/{vmtype}/{vmid}/config', **changes)
+        if 'efidisk0' in changes:
+            up = api.post(f'/nodes/{node}/{vmtype}/{vmid}/config', **changes)
+            if up:
+                api.wait_upid(node, up, task)
+        else:
+            api.put(f'/nodes/{node}/{vmtype}/{vmid}/config', **changes)
         task.log('applied: ' + ', '.join(f'{k}={v}' for k, v in changes.items()))
     if options.get('power_on'):
         up = api.post(f'/nodes/{node}/{vmtype}/{vmid}/status/start')

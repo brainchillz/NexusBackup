@@ -174,7 +174,9 @@ Next, in order:
    (virtio driver injection) and a KVM test boot are still open.
 
 Open decisions for the owner: which real VMs join the nightly jobs during the
-soak (vSphere and Proxmox). SSO (4) is next, then conversion (5).
+soak (vSphere and Proxmox). SSO (4) is next, then conversion (5). Added
+2026-10-25 for the public audience: a certificate manager in Settings
+(regenerate the self-signed pair, import a real one; see Phase 6).
 
 Where things are written down: this file (design and status), `README.md`
 (install and use), `../OTNOPS-Infra/hosts/testserver.md` (serenity install,
@@ -666,6 +668,27 @@ in both directions with working networking and guest agent.
 Encryption at rest, verification jobs, VDDK accelerator, file-level restore
 by mounting images, scheduled replication, instant recovery on Proxmox,
 Postgres, multi-vCenter.
+
+**Certificate manager in Settings** (added 2026-10-25). Today the server's
+TLS is a self-signed pair generated at first start (`core/tls.py`) unless
+`HVB_TLS_CERT`/`HVB_TLS_KEY` point at files; changing it means editing
+`hvbackup.conf` and restarting, which nobody outside this lab will find.
+Wanted: a Settings → Certificate page that shows the current certificate
+(subject, SANs, issuer, expiry, SHA-256 fingerprint), regenerates the
+self-signed pair with chosen names, imports a real certificate and key
+(PEM upload or paste, chain optional, validated to match before it is
+saved), and applies it without a full restart (or with a clean rolling
+restart that waits for running tasks). Everything that pins the server
+certificate must follow: the Proxmox storage registration carries the
+fingerprint (`HvbackupPlugin.pm` `fingerprint`, checked by `pve_helper.py`),
+proxies verify by `HVB_CA` or run `HVB_INSECURE`, the vSphere plug-in
+registration records the server thumbprint, and the Nexus Dashboard
+plug-in's client.conf. The page should say what will break and offer to
+re-push (PVE storages, plug-in re-registration) or hand out the new CA for
+proxies. Document the reverse-proxy alternative (Caddy on serenity in
+front of :8460, `../OTNOPS-Infra/hosts/testserver.md` 2026-10-25) in
+`docs/INSTALL.md` either way. Later: ACME (Let's Encrypt, DNS-01 for
+internal names).
 
 ## 9. Risks
 

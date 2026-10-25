@@ -176,7 +176,10 @@ Next, in order:
 Open decisions for the owner: which real VMs join the nightly jobs during the
 soak (vSphere and Proxmox). SSO (4) is next, then conversion (5). Added
 2026-10-25 for the public audience: a certificate manager in Settings
-(regenerate the self-signed pair, import a real one; see Phase 6).
+(regenerate the self-signed pair, import a real one) and container-first
+settings (a settings table the UI edits, env vars as bootstrap defaults;
+first admin, public URL, time zone, catalog backup, logs, themes, proxy
+image, SSO and notifications UI-first; see Phase 6).
 
 Where things are written down: this file (design and status), `README.md`
 (install and use), `../OTNOPS-Infra/hosts/testserver.md` (serenity install,
@@ -689,6 +692,39 @@ proxies. Document the reverse-proxy alternative (Caddy on serenity in
 front of :8460, `../OTNOPS-Infra/hosts/testserver.md` 2026-10-25) in
 `docs/INSTALL.md` either way. Later: ACME (Let's Encrypt, DNS-01 for
 internal names).
+
+**Container-first settings** (added 2026-10-25). Docker Compose is the
+primary deployment, and a container user has no shell, no config file and
+no data volume to hand; today every runtime setting is an environment
+variable or a `hvbackup.conf` key, the catalog has no settings table, and
+Settings covers only repository/GC, tokens, users and the audit log. The
+principle: a settings table in the catalog that the UI edits, environment
+variables and the config file reduced to bootstrap defaults, and a field
+set by the environment shown locked with a note saying so. Items, in
+order of how soon they bite:
+- First admin account from the UI when no users exist (today
+  `docker compose exec hvbackup hvbackup init-admin`).
+- Public URL (`HVB_URL`) editable in Settings with the same "what pins
+  it" warnings as the certificate manager (proxy deploy, vSphere plug-in
+  registration).
+- Time zone: cron schedules run against the container clock (UTC unless
+  `TZ` is set) and the job editor does not say so. Show the zone, let
+  Settings pick one.
+- Catalog backup and restore: download a catalog backup from Settings and
+  write a periodic copy into the repository, so the repository alone can
+  rebuild a dead server (today: a `docker run … tar` line in INSTALL.md).
+- Logs in the UI and a runtime log-level switch (today stdout only,
+  `HVB_LOG_LEVEL` at start).
+- Themes uploaded as an archive (today drop-in directories in the data
+  volume); proxy image URL/checksum in Settings and an upload for the
+  offline OVA (today `HVB_PROXY_IMAGE*`).
+- Build the coming features UI-first: SSO (Phase 4) as Settings, not
+  config keys; notifications (SMTP, webhook) likewise.
+- Conversion in Docker: the image lacks libguestfs, qemu-nbd and
+  `/dev/kvm`; until the image carries them the UI must say conversion is
+  unavailable instead of failing mid-restore.
+- Minor: session lifetime and port as settings; an update-available
+  notice in the UI since container users never see release notes.
 
 ## 9. Risks
 

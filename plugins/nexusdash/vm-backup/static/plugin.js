@@ -25,7 +25,7 @@ function vmbBadge(text, cls) {
   return `<span class="status-badge ${cls || ''}">${escapeHtml(String(text))}</span>`;
 }
 function vmbStateBadge(s) {
-  const map = { protected: 'green', stale: 'yellow', overdue: 'red', failed: 'red', unprotected: '',
+  const map = { protected: 'green', stale: 'yellow', overdue: 'red', failed: 'red', unprotected: '', replica: 'blue',
     done: 'green', running: 'yellow', queued: 'yellow', failed_run: 'red', cancelled: '', poweredOn: 'green', poweredOff: '' };
   return vmbBadge(s === 'poweredOn' ? 'on' : s === 'poweredOff' ? 'off' : s, map[s] || '');
 }
@@ -98,7 +98,7 @@ window['page_vm-backup'] = async function () {
 function vmbFilterVms() {
   const q = (($('vmb-filter') || {}).value || '').toLowerCase();
   const rows = (window._vmbVms || []).filter(v => !q || v.name.toLowerCase().includes(q) || (v.connection || '').toLowerCase().includes(q) || v.state.includes(q));
-  const order = { failed: 0, overdue: 1, unprotected: 2, stale: 3, protected: 4 };
+  const order = { failed: 0, overdue: 1, unprotected: 2, stale: 3, protected: 4, replica: 5 };
   rows.sort((a, b) => (order[a.state] - order[b.state]) || a.name.localeCompare(b.name));
   const el = $('vmb-vms');
   if (!el) return;

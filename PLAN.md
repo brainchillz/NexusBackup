@@ -3,7 +3,7 @@
 Status: draft, 2026-10-20
 Name: NexusBackup (command and package `hvbackup`; "the server" below)
 
-## 0. Status and next steps (2026-10-20)
+## 0. Status and next steps (2026-10-26)
 
 Done: Phase 0 (spike), Phase 1 (hvbackup 0.1.0 installed on serenity, nightly
 job on two test VMs), Phase 2 (vCenter plug-in, visually checked), Phase 2b
@@ -173,8 +173,44 @@ Next, in order:
    keys, OVMF + efidisk added after restore) or a vSphere spec. Windows
    (virtio driver injection) and a KVM test boot are still open.
 
+6. **Scheduled replication and several vCenters** (built 2026-10-26).
+   Replication: `core/replication.py`, tables `replications` and `replicas`;
+   a replication names source VMs, a target connection, placement options,
+   and syncs after every backup of a member VM (hook in `ops._backup_one`
+   and the PVE finish route) and/or on a cron schedule (the scheduler now
+   walks both tables). First sync = restore of the newest original restore
+   point, powered off, `<vm>-replica`; later syncs on a VMware target write
+   only the chunks that differ between the two indexes into the replica's
+   disks through the proxy (`write_zeros` in the agent, 0.2.0; older agents
+   fall back to a rebuild), disks grown at the source are extended; on a
+   Proxmox target the guest is restored over the same vmid with `force` and
+   its MACs re-applied; cross-platform syncs convert first with the identity
+   of the first conversion pinned (`convert` option `identity`). Failover
+   powers the copy on (test mode: NICs disconnected; end-test marks it dirty
+   so the next sync rebuilds), forget drops the record and optionally the VM.
+   Replicas are flagged in `/vms` (`replica_of`), excluded from the VM count,
+   listed on the Replication page, CLI `replications` and `replicas`. Proven
+   on the lab: vmbackup-target (vCenter) -> lab-esxi-21 through its proxy
+   (2.6 GiB full in 10 s), a backup of the source triggered the sync, the
+   old-agent fallback rebuilt, test boot and end-test went through, the
+   rebuild after it too; matt-test1-dr (ESXi) -> lab-pve with conversion.
+   Several vCenters: `ops.adopt_moved_vms` at inventory time re-points a gone
+   row with the same UUID at the new connection and moref (restore points,
+   CBT state and job membership follow; audit `vm_moved`); backup jobs skip
+   and log VMs that moved away; `proxy_links` makes a proxy usable from every
+   connection whose inventory shows its VM (proven: proxy-esxi-21 linked to
+   lab-vcenter); the plug-in session exchange tries each vCenter connection
+   when the global view brings no GUID; `HVB_CONCURRENCY` (default 2) caps
+   backups, restores and syncs per connection (`ops.connection_slot`).
+   Left: the proxy agents on the lab proxies still run 0.1.0 (upgrade with
+   `install.sh --agent` or a re-fetch of `proxy_agent.py`), so the
+   incremental write path is covered by unit tests, not yet by a lab run; a
+   cross-vCenter vMotion needs a second vCenter the lab does not have (the
+   unregister/re-register case has the same code path, covered by tests).
+
 Open decisions for the owner: which real VMs join the nightly jobs during the
-soak (vSphere and Proxmox). SSO (4) is next, then conversion (5). Added
+soak (vSphere and Proxmox). SSO (4) is next, then Windows conversion (5), then
+instant recovery (Phase 6, kept for last on 2026-10-26). Added
 2026-10-25 for the public audience: a certificate manager in Settings
 (regenerate the self-signed pair, import a real one) and container-first
 settings (a settings table the UI edits, env vars as bootstrap defaults;
@@ -513,10 +549,10 @@ Supported guest matrix at launch: Windows Server 2019+, Windows 10/11,
 Debian/Ubuntu/RHEL-family current releases, BIOS or UEFI. Everything else is
 reported as unsupported, not converted badly.
 
-Later: scheduled replication (convert and push every new restore point) and
-instant recovery (boot on Proxmox from an NBD export while storage migrates;
-on vSphere, mount the server's NFS export as a datastore and clone back to
-production storage).
+Scheduled replication (convert and push every new restore point) is built
+(§0 item 6). Later: instant recovery (boot on Proxmox from an NBD export while
+storage migrates; on vSphere, mount the server's NFS export as a datastore and
+clone back to production storage), see Phase 6.
 
 ## 6. Technology choices
 
@@ -669,8 +705,19 @@ in both directions with working networking and guest agent.
 
 ### Phase 6 — Hardening and extras
 Encryption at rest, verification jobs, VDDK accelerator, file-level restore
-by mounting images, scheduled replication, instant recovery on Proxmox,
-Postgres, multi-vCenter.
+by mounting images, instant recovery, Postgres. Done 2026-10-26: scheduled
+replication, multi-vCenter (§0 item 6).
+
+**Instant recovery** (kept for last, 2026-10-26). Boot a VM straight from the
+repository and migrate its storage while it runs. Proxmox: attach the
+server's NBD export of the restore point (`core/nbd.py`, already used by
+conversion) to a new VM with a local qcow2 overlay for writes, start it, then
+`qm disk move` onto real storage; most plumbing exists. vSphere: ESXi cannot
+attach NBD, so the server must expose the restore point as an NFS datastore
+(an NFS server fronting the chunk store, new work), the host mounts it,
+registers the VM, powers on, Storage vMotion moves it to production storage.
+The gain over a restore is time to first boot, especially for large thin
+disks over the HTTPS path.
 
 **Certificate manager in Settings** (added 2026-10-25). Today the server's
 TLS is a self-signed pair generated at first start (`core/tls.py`) unless

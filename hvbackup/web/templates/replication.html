@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar"><span class="muted">A replication keeps a powered-off standby copy of each VM on another connection (another vCenter, a standalone host, a Proxmox cluster), refreshed after every backup or on a schedule. Failover powers the copy on.</span><span class="spacer"></span><button class="btn primary" id="add" hidden>New replication</button></div>
+<div class="card"><div id="list"></div></div>
+<h3 class="section-title" style="margin-top:18px">Replicas <span class="muted" style="font-weight:400">One standby VM per source VM and target. A copy is "behind" until the next sync carries it to the newest restore point.</span></h3>
+<div class="card"><div id="replicas"></div></div>
+{% endblock %}
+{% block script %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  if (can('operator')) document.getElementById('add').hidden = false;
+  const el = document.getElementById('list'), rel = document.getElementById('replicas');
+  let reps = [], replicas = [];
+  const stateBadgeR = s => badge(s === 'synced' ? 'synced' : s === 'failed_over' ? 'failed over' : s, { synced: 'ok', syncing: 'info', new: 'gray', failed: 'bad', dirty: 'warn', failed_over: 'warn', test: 'warn' }[s] || '');
+  function draw() {
+    renderTable(el, [
+      { h: 'Name', f: j => `<b>${esc(j.name)}</b>${j.enabled ? '' : ' ' + badge('disabled', 'warn')}` },
+      { h: 'From', f: j => esc(j.connection_name) },
+      { h: 'To', f: j => esc(j.target_connection_name) + ' ' + badge(j.target_type, 'info') },
+      { h: 'VMs', f: j => `<span title="${esc(j.vm_names.join(', '))}">${j.vm_names.length}</span>`, cls: 'num' },
+      { h: 'Trigger', f: j => [j.after_backup ? 'after each backup' : '', j.schedule ? `<span class="mono">${esc(j.schedule)}</span>` : ''].filter(Boolean).join(' + ') || '<span class="muted">manual</span>' },
+      { h: 'Next run', f: j => j.enabled && j.next_run ? `<span title="${esc(fmtTime(j.next_run))}">${esc(until(j.next_run))}</span>` : '' },
+      { h: 'Last run', f: j => (j.last_status ? stateBadge(j.last_status) + ' ' : '') + titleTime(j.last_run) },
+      { h: 'Replicas', f: j => j.replicas.length ? j.replicas.map(r => stateBadgeR(r.state)).join(' ') : '<span class="muted">none yet</span>' },
+      { h: '', f: j => can('operator') ? `<button class="btn sm primary" data-a="run" data-id="${j.id}">Sync now</button> <button class="btn sm" data-a="edit" data-id="${j.id}">Edit</button> <button class="btn sm" data-a="toggle" data-id="${j.id}">${j.enabled ? 'Disable' : 'Enable'}</button> <button class="btn sm danger" data-a="del" data-id="${j.id}">Delete</button>` : '' },
+    ], reps, 'No replications yet. A replication needs a source VM with at least one restore point and a second connection to copy it to.');
+    renderTable(rel, [
+      { h: 'Source VM', f: r => `<a href="/vms/${r.vm_id}">${esc(r.vm_name)}</a>` },
+      { h: 'Replica', f: r => `<b>${esc(r.name)}</b> <span class="muted">on ${esc(r.target_connection_name)}</span>${r.moref ? ` <span class="mono muted">${esc(r.moref)}</span>` : ''}` },
+      { h: 'State', f: r => stateBadgeR(r.state) + (r.behind ? ' ' + badge('behind', 'warn') : '') + (r.last_error ? ` <span class="muted" title="${esc(r.last_error)}">${esc(r.last_error.slice(0, 60))}</span>` : '') },
+      { h: 'At restore point', f: r => r.source_rp_id ? `${esc(r.source_rp_id)}${r.newest_rp_id && r.newest_rp_id !== r.source_rp_id ? ` <span class="muted">(newest ${esc(r.newest_rp_id)})</span>` : ''}` : '<span class="muted">—</span>', cls: 'num' },
+      { h: 'Synced', f: r => titleTime(r.synced_at) },
+      { h: 'Replication', f: r => esc(r.replication_name || '(deleted)') },
+      { h: '', f: r => (r.last_task_id ? `<a class="btn sm" href="/tasks/${r.last_task_id}">Log</a> ` : '')
+          + (can('restore') && r.moref && !['failed_over', 'test', 'syncing'].includes(r.state) ? `<button class="btn sm primary" data-r="failover" data-id="${r.id}">Fail over</button> <button class="btn sm" data-r="test" data-id="${r.id}">Test boot</button> ` : '')
+          + (can('restore') && r.state === 'test' ? `<button class="btn sm" data-r="endtest" data-id="${r.id}">End test</button> ` : '')
+          + (can('operator') ? `<button class="btn sm danger" data-r="forget" data-id="${r.id}">Forget</button>` : '') },
+    ], replicas, 'No replicas yet. Run a replication to make the first copies.');
+  }
+  async function load() {
+    [reps, replicas] = await Promise.all([api('GET', '/api/v1/replications'), api('GET', '/api/v1/replicas')]);
+    draw(); return true;
+  }
+  pollWhile(load, 10000);
+  document.getElementById('add').onclick = () => replicationDialog(null);
+  document.addEventListener('replications-changed', load);
+  el.addEventListener('click', async e => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const j = reps.find(x => String(x.id) === b.dataset.id);
+    if (b.dataset.a === 'run') startedTask(await api('POST', `/api/v1/replications/${j.id}/run`), 'Sync started');
+    if (b.dataset.a === 'edit') replicationDialog(j);
+    if (b.dataset.a === 'toggle') { await api('PATCH', `/api/v1/replications/${j.id}`, { enabled: !j.enabled }); load(); }
+    if (b.dataset.a === 'del') confirmModal('Delete replication', `Delete replication "${j.name}"? Its replicas stay as records and as VMs until you forget them below.`, async () => { await api('DELETE', `/api/v1/replications/${j.id}`); load(); }, 'danger');
+  });
+  rel.addEventListener('click', async e => {
+    const b = e.target.closest('button[data-r]'); if (!b) return;
+    const r = replicas.find(x => String(x.id) === b.dataset.id);
+    if (b.dataset.r === 'failover') confirmModal('Fail over', `Power on ${r.name} on ${r.target_connection_name} with its network connected? It carries restore point ${r.source_rp_id} of ${r.vm_name}. Make sure the original is down: the copy keeps the guest's host name and addresses. Syncing stops for this replica.`, async () => { const res = await api('POST', `/api/v1/replicas/${r.id}/failover`, { test: false }); toast(`${res.name} powered on`); load(); }, 'danger');
+    if (b.dataset.r === 'test') confirmModal('Test boot', `Power on ${r.name} with every NIC disconnected, to check that it boots? End the test afterwards; the next sync then rebuilds the copy, because the guest wrote to its disks.`, async () => { const res = await api('POST', `/api/v1/replicas/${r.id}/failover`, { test: true }); toast(`${res.name} powered on, isolated`); load(); });
+    if (b.dataset.r === 'endtest') confirmModal('End test', `Power ${r.name} off and reconnect its NICs? The next sync rebuilds it.`, async () => { await api('POST', `/api/v1/replicas/${r.id}/end-test`); load(); });
+    if (b.dataset.r === 'forget') modal({ title: 'Forget replica', body: `<p>Forget the replica ${esc(r.name)} of ${esc(r.vm_name)} on ${esc(r.target_connection_name)}? The next sync makes a new copy from scratch.</p><label class="c"><input type="checkbox" name="delete_vm"> Also destroy the VM on ${esc(r.target_connection_name)}</label>`,
+      buttons: [{ label: 'Cancel' }, { label: 'Forget', cls: 'danger', onClick: async m => { await api('DELETE', `/api/v1/replicas/${r.id}?delete_vm=${val(m, 'delete_vm') ? 'true' : 'false'}`); load(); } }] });
+  });
+});
+</script>
+{% endblock %}

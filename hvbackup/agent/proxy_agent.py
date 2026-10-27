@@ -31,7 +31,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 log = logging.getLogger('hvbackup.agent')
 RECORD = struct.Struct('<Q32s')
 ZERO_HASH = b'\0' * 32
-VERSION = '0.1.0'
+VERSION = '0.2.0'  # 0.2.0: write_zeros for replica updates
 
 
 def load_conf():
@@ -220,8 +220,11 @@ def do_write(srv, work):
     dev = find_device(size, spec['bus'], spec['unit'], set(spec.get('known_devices', [])))
     data = srv.get(f'/api/v1/agent/work/{work["id"]}/index', timeout=600).content
     recs = [RECORD.unpack_from(data, o) for o in range(0, len(data) - len(data) % RECORD.size, RECORD.size)]
-    recs = [(i, h) for i, h in recs if h != ZERO_HASH]
-    log.info('work %s: writing %d chunks to %s', work['id'], len(recs), dev)
+    # a fresh thin disk is all zeros already; an existing replica disk gets its freed blocks cleared
+    write_zeros = bool(spec.get('write_zeros'))
+    if not write_zeros:
+        recs = [(i, h) for i, h in recs if h != ZERO_HASH]
+    log.info('work %s: writing %d chunks to %s%s', work['id'], len(recs), dev, ' (zeros included)' if write_zeros else '')
     fd = os.open(dev, os.O_WRONLY)
     tl = threading.local()
     lock = threading.Lock()
@@ -230,11 +233,14 @@ def do_write(srv, work):
 
     def one(rec):
         idx, h = rec
-        z = srv.get(f'/api/v1/agent/chunks/{h.hex()}', timeout=300).content
-        dctx = getattr(tl, 'd', None) or setattr(tl, 'd', zstandard.ZstdDecompressor()) or tl.d
-        buf = dctx.decompress(z, max_output_size=cs)
-        if blake3.blake3(buf).digest() != h:
-            raise RuntimeError(f'chunk {h.hex()} corrupt in transit')
+        if h == ZERO_HASH:
+            buf = bytes(cs)
+        else:
+            z = srv.get(f'/api/v1/agent/chunks/{h.hex()}', timeout=300).content
+            dctx = getattr(tl, 'd', None) or setattr(tl, 'd', zstandard.ZstdDecompressor()) or tl.d
+            buf = dctx.decompress(z, max_output_size=cs)
+            if blake3.blake3(buf).digest() != h:
+                raise RuntimeError(f'chunk {h.hex()} corrupt in transit')
         off = idx * cs
         n = min(cs, size - off)
         os.pwrite(fd, buf[:n], off)

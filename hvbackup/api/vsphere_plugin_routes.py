@@ -86,15 +86,30 @@ class Exchange(BaseModel):
 def exchange(body: Exchange, request: Request):
     """vSphere Client session token -> hvbackup bearer token (1 hour) for the plug-in pages."""
     conn_row = _connection_for_guid(body.vc_guid)
-    if conn_row is None:
+    if conn_row is not None:
+        candidates = [conn_row]
+    elif body.vc_guid:
         raise HTTPException(400, 'no hvbackup connection matches this vCenter; add it under Connections first')
-    try:
-        vc_user, _ = vsp.user_from_session_token(conn_row['host'], body.session_token, body.vc_guid or conn_row['info'].get('instance_uuid'),
-                                                 verify=bool(conn_row['verify_ssl']))
-    except PermissionError as e:
-        raise HTTPException(401, str(e))
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f'session exchange with vCenter failed: {type(e).__name__}: {e}')
+    else:
+        # the global view carries no object, so no vCenter GUID: with several vCenters the
+        # session token is valid on exactly the one the client is signed in to; ask each in turn
+        candidates = _vsphere_connections()
+        if not candidates:
+            raise HTTPException(400, 'no vSphere connection is configured; add the vCenter under Connections first')
+    vc_user, conn_row, errors = None, None, []
+    for cand in candidates:
+        try:
+            vc_user, _ = vsp.user_from_session_token(cand['host'], body.session_token, body.vc_guid or cand['info'].get('instance_uuid'),
+                                                     verify=bool(cand['verify_ssl']))
+            conn_row = cand
+            break
+        except PermissionError as e:
+            errors.append((cand, 401, str(e)))
+        except Exception as e:  # noqa: BLE001
+            errors.append((cand, 502, f'session exchange with vCenter failed: {type(e).__name__}: {e}'))
+    if conn_row is None:
+        code = 401 if all(e[1] == 401 for e in errors) else 502
+        raise HTTPException(code, '; '.join(f'{c["name"]}: {msg}' for c, _, msg in errors))
     user = None
     for cand in vsp.map_username(vc_user):
         user = auth.get_user(cand)
@@ -110,15 +125,24 @@ def exchange(body: Exchange, request: Request):
             'expires_in': auth.PLUGIN_TOKEN_TTL}
 
 
-def _connection_for_guid(guid):
+def _vsphere_connections():
     with db.conn() as c:
-        rows = [db.row_to_dict(x) for x in c.execute("SELECT * FROM connections WHERE type IN ('vcenter','esxi')")]
+        rows = [db.row_to_dict(x) for x in c.execute("SELECT * FROM connections WHERE type IN ('vcenter','esxi') ORDER BY CASE type WHEN 'vcenter' THEN 0 ELSE 1 END, id")]
     for row in rows:
         row['info'] = row.get('info') or {}
+    return rows
+
+
+def _connection_for_guid(guid):
+    """The connection whose vCenter has this instance UUID. Objects of every vCenter in an
+    Enhanced Linked Mode group come with their own GUID, so a plug-in registered on one of them
+    resolves objects of all of them, as long as each is a connection here."""
+    rows = _vsphere_connections()
     if guid:
         for row in rows:
             if (row['info'].get('instance_uuid') or '').lower() == guid.lower():
                 return row
+        return None
     return rows[0] if len(rows) == 1 else None
 
 

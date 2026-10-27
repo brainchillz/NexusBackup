@@ -352,6 +352,9 @@ def convert(task, rp_id, target, options):
     check_tools(target)
     new_identity = options.get('new_identity', True)
     install_tools = bool(options.get('install_tools'))
+    # replication converts the same VM again and again: the copy must keep the MACs and UUID
+    # of its first conversion, or the guest's pinned interface names and the replica's NICs drift apart
+    identity = options.get('identity') or {}
     cs = manifest['chunk_size']
     name = options.get('name') or spec.get('name') or vm_row['name']
     task.log(f'converting restore point {rp_id} of {vm_row["name"]} ({src_platform}) to {target}: {len(manifest["disks"])} disk(s), '
@@ -381,8 +384,9 @@ def convert(task, rp_id, target, options):
         net_files = guest_net_files(task, overlays, work)
         names = nic_names_in(net_files)
         nics = []
-        for n in spec.get('nics') or []:
-            mac = n.get('mac') if not new_identity else ''
+        fixed_macs = list(identity.get('macs') or [])
+        for i, n in enumerate(spec.get('nics') or []):
+            mac = fixed_macs[i] if i < len(fixed_macs) and fixed_macs[i] else (n.get('mac') if not new_identity else '')
             nics.append({**n, 'mac': mac or new_mac(target)})
         if names:
             task.log(f'interface names in the guest configuration: {", ".join(names)}; pinned to the {"new" if new_identity else "original"} MAC addresses')
@@ -412,7 +416,7 @@ def convert(task, rp_id, target, options):
 
         # 4. read back only what changed and store it as new chunks
         task.progress(0.8, 'storing the changed blocks')
-        uuid = str(uuidlib.uuid4()) if new_identity else (spec.get('uuid') or str(uuidlib.uuid4()))
+        uuid = identity.get('uuid') or (str(uuidlib.uuid4()) if new_identity else (spec.get('uuid') or str(uuidlib.uuid4())))
         disks_out, changed_total, stored_total, new_chunks = [], 0, 0, 0
         for i, (d, hashes, ov) in enumerate(disks):
             m = json.loads(run(task, ['qemu-img', 'map', '--output=json', '-f', 'qcow2', ov]))
@@ -455,7 +459,7 @@ def convert(task, rp_id, target, options):
             c.execute('UPDATE runs SET restore_point_id=? WHERE id=?', (new_id, run_id))
         vm_uuid = vm_row.get('uuid') or spec.get('uuid') or f'vm{vm_row["id"]}'
         new_manifest = {'version': 1, 'restore_point': new_id, 'created': now, 'chunk_size': cs, 'platform': target, 'vm': tspec, 'kind': 'converted',
-                        'converted_from': {'restore_point': rp_id, 'platform': src_platform, 'options': {'new_identity': new_identity, 'install_tools': install_tools},
+                        'converted_from': {'restore_point': rp_id, 'platform': src_platform, 'options': conversion_key(options),
                                            'guest': ins, 'nic_names': names, 'mac_rewritten': sorted(patched)}, 'disks': []}
         for d in disks_out:
             rel = rep.write_index(vm_uuid, new_id, d['key'], d['hashes'])
@@ -477,12 +481,20 @@ def convert(task, rp_id, target, options):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def conversion_key(options):
+    """The options that make two conversions of one point interchangeable."""
+    key = {'new_identity': options.get('new_identity', True), 'install_tools': bool(options.get('install_tools'))}
+    if options.get('identity'):
+        key['identity'] = {'uuid': options['identity'].get('uuid') or '', 'macs': list(options['identity'].get('macs') or [])}
+    return key
+
+
 def find_converted(rp_id, target, options):
     """An existing, still present conversion of rp_id with the same options, if any."""
     with db.conn() as c:
         rows = c.execute('SELECT id, manifest FROM restore_points WHERE source_rp_id=? AND platform=? AND deleted=0 AND manifest!=\'\' ORDER BY id DESC', (rp_id, target)).fetchall()
     rep = repo()
-    want = {'new_identity': options.get('new_identity', True), 'install_tools': bool(options.get('install_tools'))}
+    want = conversion_key(options)
     for r in rows:
         try:
             m = rep.read_manifest(r['manifest'])

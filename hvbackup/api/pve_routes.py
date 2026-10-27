@@ -291,6 +291,7 @@ async def backup_finish(run_id: int, request: Request, proxy=Depends(current_pro
     if external:
         tasks.finish_external(run['task_id'], 'done', result={'vm': vm['name'], 'status': 'done', 'restore_point': rp_id, 'kind': kind,
                                                                'transport': 'pve', 'bytes_read': bytes_read})
+        ops.on_new_restore_point(task, vm['id'], rp_id)  # server-started runs do this in ops._backup_one
     try:
         os.remove(_stage_path(run_id))
     except OSError:

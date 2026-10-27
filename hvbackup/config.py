@@ -11,6 +11,7 @@ package and the container install; environment variables override the file.
   HVB_PROXY_IMAGE_URL     cloud image (OVA) the server deploys proxy VMs from; default Ubuntu 24.04
   HVB_PROXY_IMAGE_SHA256  its checksum when the URL has no SHA256SUMS next to it (optional)
   HVB_PROXY_IMAGE         a local OVA to use instead of downloading (offline sites)
+  HVB_CONCURRENCY         backups/restores/syncs running at once per connection (default 2)
 """
 import os
 

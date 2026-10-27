@@ -371,3 +371,98 @@ async function jobDialog(job, preset) {
   m.querySelector('[name=connection_id]').addEventListener('change', () => { sel.clear(); draw(); });
   draw();
 }
+
+/* Replication editor: source connection and VMs, target connection with live placement
+   (host, datastore, folder, one network picker per source network), trigger and naming. */
+async function replicationDialog(rep) {
+  const [conns, vms] = await Promise.all([api('GET', '/api/v1/connections'), api('GET', '/api/v1/vms')]);
+  const o = (rep && rep.options) || {};
+  const j = rep || { name: '', connection_id: conns[0] && conns[0].id, target_connection_id: (conns[1] || conns[0] || {}).id, vm_ids: [],
+    schedule: '', after_backup: true, enabled: true, options: {} };
+  const presets = [['', 'No schedule (after backups only)'], ['0 */4 * * *', 'Every 4 hours'], ['0 2 * * *', 'Daily at 02:00'], ['0 2 * * 0', 'Weekly, Sunday 02:00']];
+  const body = `
+    <label class="f"><span>Name</span><input name="name" value="${esc(j.name)}" placeholder="e.g. core-to-dr"></label>
+    <div class="row">
+      <label class="f"><span>Source connection</span><select name="connection_id" ${rep ? 'disabled' : ''}>${conns.map(c => `<option value="${c.id}" ${c.id === j.connection_id ? 'selected' : ''}>${esc(c.name)} (${esc(c.type)})</option>`).join('')}</select></label>
+      <label class="f"><span>Target connection</span><select name="target_connection_id" ${rep ? 'disabled' : ''}>${conns.map(c => `<option value="${c.id}" ${c.id === j.target_connection_id ? 'selected' : ''}>${esc(c.name)} (${esc(c.type)})</option>`).join('')}</select></label>
+    </div>
+    <div class="row">
+      <label class="f"><span>Host / node on the target</span><select name="host"><option value="">(automatic)</option></select></label>
+      <label class="f"><span>Datastore / storage</span><select name="datastore"><option value="">(automatic)</option></select></label>
+      <label class="f"><span>Folder / pool</span><select name="folder"><option value="">(root)</option></select></label>
+    </div>
+    <div id="netmap" class="row"></div>
+    <p class="muted" id="convnote" style="display:none">The platforms differ: each sync converts the newest restore point first (Linux guests). The copy keeps the identity of its first conversion.</p>
+    <div class="row">
+      <label class="f"><span>Replica name suffix</span><input name="suffix" value="${esc(o.suffix === undefined ? '-replica' : o.suffix)}"></label>
+      <label class="f"><span>Schedule (cron, server local time; optional)</span><input name="schedule" value="${esc(j.schedule || '')}" list="cronr"><datalist id="cronr">${presets.map(p => `<option value="${p[0]}">${p[1]}</option>`).join('')}</datalist></label>
+    </div>
+    <label class="c"><input type="checkbox" name="after_backup" ${j.after_backup ? 'checked' : ''}> Sync after every backup of a member VM</label>
+    <label class="c"><input type="checkbox" name="new_identity" ${o.new_identity === false ? '' : 'checked'}> New identity for the copy (fresh MAC addresses and BIOS UUID). Untick to keep the original's, for a failover where the original will be gone.</label>
+    <label class="c"><input type="checkbox" name="install_tools" ${o.install_tools ? 'checked' : ''}> Cross-platform copies: install the target's guest tools on first boot</label>
+    <label class="c"><input type="checkbox" name="enabled" ${j.enabled ? 'checked' : ''}> Enabled</label>
+    <label class="f"><span>Virtual machines (with restore points; a VM without one is skipped until its first backup)</span><input name="filter" placeholder="filter…" autocomplete="off"></label>
+    <div class="vmlist" id="vmlist"></div>`;
+  const m = modal({
+    title: rep ? 'Edit replication' : 'New replication', body, sticky: true,
+    buttons: [{ label: 'Cancel' }, {
+      label: rep ? 'Save' : 'Create', cls: 'primary', onClick: async mm => {
+        const ids = [...mm.querySelectorAll('#vmlist input:checked')].map(e => Number(e.value));
+        if (!ids.length) throw new Error('select at least one VM');
+        const networks = {};
+        for (const s of mm.querySelectorAll('#netmap select')) if (s.value) networks[s.dataset.src] = s.value;
+        const data = { name: val(mm, 'name'), vm_ids: ids, schedule: val(mm, 'schedule') || null, after_backup: val(mm, 'after_backup'), enabled: val(mm, 'enabled'),
+          options: { suffix: val(mm, 'suffix'), host: val(mm, 'host') || null, datastore: val(mm, 'datastore') || null, folder: val(mm, 'folder') || null,
+            networks, new_identity: val(mm, 'new_identity'), install_tools: val(mm, 'install_tools') } };
+        if (!data.schedule) data.clear_schedule = true;
+        if (rep) await api('PATCH', `/api/v1/replications/${rep.id}`, data);
+        else await api('POST', '/api/v1/replications', { ...data, connection_id: Number(val(mm, 'connection_id')), target_connection_id: Number(val(mm, 'target_connection_id')) });
+        toast(rep ? 'Replication saved' : 'Replication created');
+        document.dispatchEvent(new CustomEvent('replications-changed'));
+      }
+    }]
+  });
+  const sel = n => m.querySelector(`[name="${n}"]`);
+  const list = m.querySelector('#vmlist');
+  const chosen = new Set(j.vm_ids);
+  const platformOf = c => (c && c.type === 'proxmox') ? 'proxmox' : 'vmware';
+  let placement = null;
+  const srcNets = () => [...new Set(vms.filter(v => chosen.has(v.id)).flatMap(v => v.networks || []))];
+  function drawVms() {
+    const cid = Number(val(m, 'connection_id'));
+    const f = (val(m, 'filter') || '').toLowerCase();
+    const rows = vms.filter(v => v.connection_id === cid && !v.replica_of && (!f || v.name.toLowerCase().includes(f)));
+    list.innerHTML = rows.length ? rows.map(v => `<label class="c"><input type="checkbox" value="${v.id}" ${chosen.has(v.id) ? 'checked' : ''}> ${esc(v.name)} <span class="muted">${esc(fmtBytes(v.size_bytes))} · ${v.restore_points ? v.restore_points + ' point' + (v.restore_points === 1 ? '' : 's') : 'no restore point yet'}</span></label>`).join('')
+      : '<div class="muted">No VMs on this connection.</div>';
+  }
+  function drawNets() {
+    const h = placement && placement.hosts.find(x => x.name === sel('host').value);
+    const nets = h ? h.networks : [...new Set((placement ? placement.hosts : []).flatMap(x => x.networks))];
+    m.querySelector('#netmap').innerHTML = srcNets().map(n => `<label class="f"><span>Network for ${esc(n || '(unknown)')}</span><select data-src="${esc(n)}"><option value="">(same name or the only one)</option>${nets.map(x => `<option value="${esc(x)}" ${(o.networks || {})[n] === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>`).join('');
+  }
+  function fillHost() {
+    const h = placement && placement.hosts.find(x => x.name === sel('host').value);
+    const info = (placement && placement.datastores) || {};
+    const dss = (h ? h.datastores : Object.keys(info)).map(n => ({ name: n, ...(info[n] || {}) })).sort((a, b) => (b.free || 0) - (a.free || 0));
+    sel('datastore').innerHTML = '<option value="">(automatic)</option>' + dss.map(d => `<option value="${esc(d.name)}" ${o.datastore === d.name ? 'selected' : ''}>${esc(d.name)}${d.free != null ? ` — ${esc(fmtBytes(d.free))} free` : ''}</option>`).join('');
+    drawNets();
+  }
+  async function loadPlacement() {
+    const tid = Number(val(m, 'target_connection_id'));
+    const tconn = conns.find(c => c.id === tid), sconn = conns.find(c => c.id === Number(val(m, 'connection_id')));
+    m.querySelector('#convnote').style.display = platformOf(tconn) === platformOf(sconn) ? 'none' : '';
+    sel('host').innerHTML = '<option value="">loading…</option>';
+    try { placement = await api('GET', `/api/v1/connections/${tid}/placement`); } catch (e) { placement = null; m.querySelector('.err').textContent = 'Cannot read the target: ' + e.message; }
+    const hosts = (placement && placement.hosts) || [];
+    sel('host').innerHTML = '<option value="">(automatic)</option>' + hosts.map(h => `<option value="${esc(h.name)}" ${o.host === h.name ? 'selected' : ''}>${esc(h.name)}${h.cluster ? ` (${esc(h.cluster)})` : ''}</option>`).join('');
+    sel('folder').innerHTML = '<option value="">(root)</option>' + ((placement && placement.folders) || []).map(f => `<option value="${esc(f.moref)}" ${o.folder === f.moref ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
+    fillHost();
+  }
+  list.addEventListener('change', e => { if (e.target.checked) chosen.add(Number(e.target.value)); else chosen.delete(Number(e.target.value)); drawNets(); });
+  m.querySelector('[name=filter]').addEventListener('input', drawVms);
+  sel('connection_id').addEventListener('change', () => { chosen.clear(); drawVms(); loadPlacement(); });
+  sel('target_connection_id').addEventListener('change', loadPlacement);
+  sel('host').addEventListener('change', fillHost);
+  drawVms();
+  await loadPlacement();
+}

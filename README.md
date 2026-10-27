@@ -150,6 +150,7 @@ override it; `HVB_CONFIG` points elsewhere).
 | `HVB_URL` | empty | Public base URL shown to proxies and in the UI, e.g. `https://backup.example.net:8460`. |
 | `HVB_TLS_CERT` / `HVB_TLS_KEY` | empty | PEM certificate and key. Unset: a self-signed pair is generated in `<data>/certs/` on first start. |
 | `HVB_LOG_LEVEL` | `info` | `debug`, `info`, `warning`. |
+| `HVB_CONCURRENCY` | `2` | Backups, restores and replication syncs running at once per connection; the rest wait in their task. |
 
 Agent: `/etc/hvbackup/agent.conf` on each proxy VM.
 
@@ -208,6 +209,8 @@ before the subcommand for raw output.
 | `connections list\|add\|test\|refresh\|delete` | Manage hypervisor connections | `hvbackup connections add --type vcenter --name lab --host 192.168.35.10 --username administrator@vsphere.local` |
 | `connections pve-setup\|pve-storage <c>` | Proxmox: node installer one-liner; register or re-key the `hvbackup` storage | `hvbackup connections pve-storage lab-pve` |
 | `connections placement <id\|name>` | Hosts, datastores (with free space) and networks a restore can land on | `hvbackup connections placement dr-site` |
+| `replications list\|add\|run\|delete` | Standby copies on another connection, synced after backups or on a schedule | `hvbackup replications add --name core-to-dr --to dr-site --vms web01 db01 --schedule "0 */4 * * *"` |
+| `replicas list\|failover\|test\|end-test\|forget` | Fail a copy over, boot it isolated, end the test, forget it (`--delete-vm`) | `hvbackup replicas failover 3` |
 | `vms list [--connection N]` | Inventory with protection status | `hvbackup vms list` |
 | `backup <vm> [--wait] [--no-quiesce]` | Back up one VM now (name or id) | `hvbackup backup web01 --wait` |
 | `jobs list\|add\|run\|delete` | Scheduled jobs | `hvbackup jobs add --name nightly --vms web01 db01 --schedule "0 2 * * *" --keep-last 14` |
@@ -288,6 +291,81 @@ powered-off VM over datastore HTTPS with no proxy, an incremental with the
 host answering the CBT query, then with a proxy VM on that host a quiesced
 hot-add incremental of the running VM, a scheduled job on the connection,
 and a hot-add restore back onto the host.
+
+### Replication (standby copies on another connection)
+
+A replication keeps a powered-off copy of each member VM on another connection
+and refreshes it **after every backup** of the VM, on a **cron schedule**, or
+both (Protect → Replication, `hvbackup replications add`). The target may be
+another vCenter, a standalone ESXi host or a Proxmox cluster; the source is
+never contacted, every sync reads only the repository. Failover is "power it
+on" instead of "restore and wait".
+
+- **First sync**: a restore of the VM's newest restore point onto the target,
+  named `<vm>-replica` (suffix configurable), placed like a restore (host,
+  datastore, folder, one network per source network; unset means the source's
+  names where they exist, one sensible candidate otherwise).
+- **Later syncs, VMware target**: only the chunks that differ between the
+  restore point the replica holds and the newest one are written into the
+  replica's disks through a proxy on the target (zero chunks included, so
+  freed blocks are cleared; needs agent 0.2.0 or newer on that proxy, older
+  agents make the sync rebuild the copy instead). Without a proxy the disks
+  are re-uploaded whole over HTTPS. A disk grown at the source is extended; a
+  changed disk set rebuilds the copy.
+- **Later syncs, Proxmox target**: the guest is restored again over the same
+  vmid (`force`), which reads only allocated chunks; its MAC addresses are
+  re-applied so the copy keeps its identity.
+- **Cross-platform**: the newest point is converted first (Linux guests, see
+  below). Conversions for a replica pin the UUID and MAC addresses of the first
+  sync, so the guest's pinned interface names and the replica's NICs stay in
+  step. `--install-tools` installs the target's guest tools on first boot.
+- **Failover** (`hvbackup replicas failover <id>`, or the button): powers the
+  copy on with its network connected; syncing stops for it. **Test boot**
+  powers it on with every NIC disconnected; **End test** powers it off,
+  reconnects the NICs and marks it for a rebuild (the guest wrote to its
+  disks). **Forget** drops the record and, if asked, destroys the VM.
+- **Failback**: the failed-over copy is an ordinary VM on the target. Add it to
+  a backup job there and restore it to the original site like any restore.
+
+Replicas are listed in the inventory of the target as "replica of …", are
+excluded from the protected/unprotected counts, and must stay powered off
+between syncs (a running replica is refused with a clear error). Each sync is
+a run of kind `replicate` on the source VM, with the task log.
+
+Proven in the lab on 2026-10-26: `vmbackup-target` (vCenter) replicated to the
+standalone host `lab-esxi-21` through its proxy (full copy of 2.6 GiB in 10 s),
+a new backup of the source triggered the next sync by itself, the test boot
+powered the copy on isolated and the rebuild after it went through; and
+`matt-test1-dr` (ESXi) replicated to the Proxmox cluster with conversion.
+
+### Several vCenters, Enhanced Linked Mode, moving VMs
+
+Every connection is independent (own credentials, own inventory, own jobs),
+so adding a second or tenth vCenter is just another connection. Beyond that:
+
+- **A VM that moves** between connections (cross-vCenter vMotion, a migration
+  between Proxmox clusters, an unregister and re-register that gives it a new
+  moref) keeps its catalog row: when the inventory of the new connection sees
+  a VM whose UUID matches a row marked gone elsewhere, that row is re-pointed
+  at the new connection and moref, with its restore points and CBT state, and
+  an audit entry `vm_moved` is written. The next backup is an incremental when
+  CBT survived the move, a full otherwise. A job on the old connection logs
+  that the VM moved and skips it; add it to a job on the new connection. Two
+  live rows with the same UUID (a host both direct and through its vCenter)
+  are left alone.
+- **vSphere Client plug-in**: objects carry their vCenter's GUID, so a plug-in
+  registered on one vCenter of an Enhanced Linked Mode group resolves the VMs
+  of all of them, as long as each is a connection here. The global view has no
+  object; with several vCenters the session exchange asks each vCenter
+  connection in turn which one issued the session.
+- **Proxies**: a proxy is tied to one connection, but when its VM also appears
+  in another connection's inventory (the same host added directly and through
+  its vCenter, or two vCenters sharing a cluster) that connection uses it too;
+  the Proxies page shows "+ connection" for these links.
+- **Concurrency**: at most `HVB_CONCURRENCY` (default 2) backups, restores or
+  syncs run at once per connection; the rest wait in their task, cancellable.
+  A scheduler firing many jobs on many vCenters therefore does not start a
+  snapshot storm on any one of them.
 
 ### Garbage collection
 
@@ -554,12 +632,16 @@ Working in this release: vCenter, standalone ESXi and Proxmox VE 9 (VMs with
 dirty-bitmap incrementals, containers); full and incremental
 backups of running and powered-off VMs; restore as new VM, onto the source or
 any other connection (DR); conversion of Linux VMs between VMware and Proxmox
-in both directions; OVF/OVA export; jobs, schedules, retention, GC; web
+in both directions; OVF/OVA export; jobs, schedules, retention, GC;
+scheduled replication to another connection with failover and test boots;
+several vCenters (moved VMs keep their history, plug-in across Enhanced
+Linked Mode, shared proxies, per-connection concurrency); web
 UI, CLI, REST API with OpenAPI; vSphere Client plug-in; Nexus Dashboard
 plug-ins (declarative and Python tiers); native, deb and Docker installs.
 
 Planned: Windows guests in conversion (virtio driver injection), Nexus SSO and
-OpenID Connect logins, encryption at rest, file-level restore. The design and the
+OpenID Connect logins, instant recovery (boot from the repository while the
+storage migrates), encryption at rest, file-level restore. The design and the
 Phase 0 measurements are in [PLAN.md](PLAN.md).
 
 ## Licence

@@ -29,6 +29,7 @@ PAGES = {
     '/jobs': ('jobs.html', 'Jobs'),
     '/runs': ('runs.html', 'Runs'),
     '/restore-points': ('restore_points.html', 'Restore points'),
+    '/replication': ('replication.html', 'Replication'),
     '/proxies': ('proxies.html', 'Proxies'),
     '/tasks': ('tasks.html', 'Tasks'),
     '/settings': ('settings.html', 'Settings'),
@@ -36,7 +37,7 @@ PAGES = {
 
 NAV = [
     ('Overview', [('/', 'Dashboard')]),
-    ('Protect', [('/vms', 'Virtual machines'), ('/jobs', 'Jobs'), ('/restore-points', 'Restore points')]),
+    ('Protect', [('/vms', 'Virtual machines'), ('/jobs', 'Jobs'), ('/restore-points', 'Restore points'), ('/replication', 'Replication')]),
     ('Activity', [('/runs', 'Runs'), ('/tasks', 'Tasks')]),
     ('Infrastructure', [('/connections', 'Connections'), ('/proxies', 'Proxies')]),
     ('System', [('/settings', 'Settings')]),

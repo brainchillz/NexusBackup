@@ -64,10 +64,27 @@ CREATE TABLE IF NOT EXISTS exports (
   path TEXT NOT NULL, size_bytes INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL, task_id INTEGER, status TEXT NOT NULL, error TEXT);
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, user TEXT, action TEXT NOT NULL, detail TEXT);
+CREATE TABLE IF NOT EXISTS proxy_links (
+  proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,
+  connection_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+  vm_moref TEXT NOT NULL, seen REAL NOT NULL, PRIMARY KEY (proxy_id, connection_id));
+CREATE TABLE IF NOT EXISTS replications (
+  id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, connection_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+  target_connection_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+  vm_ids_json TEXT NOT NULL, schedule TEXT, after_backup INTEGER NOT NULL DEFAULT 1, options_json TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1, created REAL NOT NULL, last_run REAL, next_run REAL, last_status TEXT);
+CREATE TABLE IF NOT EXISTS replicas (
+  id INTEGER PRIMARY KEY, replication_id INTEGER REFERENCES replications(id) ON DELETE SET NULL,
+  vm_id INTEGER NOT NULL REFERENCES vms(id) ON DELETE CASCADE, target_connection_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, moref TEXT, state TEXT NOT NULL DEFAULT 'new', synced_rp_id INTEGER, synced_at REAL, source_rp_id INTEGER,
+  disks_json TEXT, identity_json TEXT, created REAL NOT NULL, last_error TEXT, last_task_id INTEGER, failed_over_at REAL,
+  UNIQUE(vm_id, target_connection_id));
 CREATE INDEX IF NOT EXISTS idx_runs_vm ON runs(vm_id, started);
 CREATE INDEX IF NOT EXISTS idx_rp_vm ON restore_points(vm_id, created);
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state, created);
 CREATE INDEX IF NOT EXISTS idx_work_proxy ON agent_work(proxy_id, state);
+CREATE INDEX IF NOT EXISTS idx_vms_uuid ON vms(uuid);
+CREATE INDEX IF NOT EXISTS idx_replicas_target ON replicas(target_connection_id, moref);
 """
 
 _init_lock = threading.Lock()

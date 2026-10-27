@@ -2,15 +2,42 @@
 Each is registered as a task kind and runs in a task thread."""
 import json
 import logging
+import threading
 import time
 
-from .. import db
+from .. import config, db
 from ..providers import proxmox, vmware
 from ..store.chunks import repo
 from . import scheduler, secrets, tasks, uuids
 
 log = logging.getLogger('hvbackup.ops')
 PROXY_FRESH = 120  # seconds since last hello for a proxy to count as online
+CONCURRENCY = max(int(config.get('HVB_CONCURRENCY', '2') or 2), 1)  # backups/restores running at once per connection
+_slots = {}
+_slots_guard = threading.Lock()
+
+
+class connection_slot:
+    """At most CONCURRENCY long operations (backup, restore, replication) run against one
+    connection at a time, so a scheduler firing many jobs on many vCenters does not start a
+    snapshot storm; the rest wait here, cancellable."""
+
+    def __init__(self, task, conn_id, what='work'):
+        self.task, self.conn_id, self.what = task, conn_id, what
+        with _slots_guard:
+            self.sem = _slots.setdefault(conn_id, threading.BoundedSemaphore(CONCURRENCY))
+
+    def __enter__(self):
+        waited = False
+        while not self.sem.acquire(timeout=5):
+            if not waited:
+                self.task.log(f'waiting for a free slot on this connection ({CONCURRENCY} {self.what} operations already running there)')
+                waited = True
+            self.task.check_cancel()
+        return self
+
+    def __exit__(self, *a):
+        self.sem.release()
 
 
 def connection(conn_id):
@@ -100,17 +127,75 @@ def placement(conn_row):
 
 
 def online_proxies(conn_id=None):
+    """Online proxies; for a connection, its own proxies first, then proxies tied to another
+    connection whose VM this connection also sees (a host managed by a vCenter and added as a
+    standalone connection too, or two vCenters sharing a cluster's storage). Linked rows carry
+    via_link=True and link_moref: the proxy VM's moref on *this* connection."""
     with db.conn() as c:
-        rows = c.execute('SELECT * FROM proxies WHERE enabled=1 AND last_seen>=?', (time.time() - PROXY_FRESH,)).fetchall()
-    rows = [db.row_to_dict(r) for r in rows]
-    if conn_id is not None:
-        rows = [r for r in rows if r['connection_id'] == conn_id]
-    return rows
+        rows = [db.row_to_dict(r) for r in c.execute('SELECT * FROM proxies WHERE enabled=1 AND last_seen>=?', (time.time() - PROXY_FRESH,))]
+        links = {}
+        if conn_id is not None:
+            links = {r['proxy_id']: r['vm_moref'] for r in c.execute('SELECT proxy_id, vm_moref FROM proxy_links WHERE connection_id=?', (conn_id,))}
+    if conn_id is None:
+        return rows
+    own = [r for r in rows if r['connection_id'] == conn_id]
+    linked = [{**r, 'via_link': True, 'link_moref': links[r['id']]} for r in rows if r['connection_id'] != conn_id and r['id'] in links]
+    return own + linked
 
 
 def pick_proxy(conn_id):
     ps = online_proxies(conn_id)
     return ps[0] if ps else None
+
+
+def _uuid_key(u):
+    if not u:
+        return None
+    return uuids.normalise(u) or str(u).strip().lower()
+
+
+def adopt_moved_vms(c, task, connection_id, vms):
+    """A VM that left another connection (cross-vCenter vMotion, a cluster migration, an
+    unregister and re-register that gave it a new moref) keeps its row, history, restore points
+    and CBT state: the gone row with the same UUID is re-pointed at this connection and moref.
+    Two live rows with the same UUID (a host seen both directly and through its vCenter) are
+    left alone; a row here with its own restore points is never overwritten."""
+    moved = []
+    for v in vms:
+        key = _uuid_key(v.get('uuid'))
+        if not key:
+            continue
+        cur = c.execute('SELECT id FROM vms WHERE connection_id=? AND moref=?', (connection_id, v['moref'])).fetchone()
+        cur_id = cur['id'] if cur else None
+        if cur_id is not None:
+            own = c.execute('SELECT COUNT(*) FROM restore_points WHERE vm_id=? AND deleted=0', (cur_id,)).fetchone()[0]
+            if own:
+                continue
+        cands = []
+        for r in c.execute('SELECT v.id, v.connection_id, v.moref, v.name, v.uuid, '
+                           ' (SELECT COUNT(*) FROM restore_points rp WHERE rp.vm_id=v.id AND rp.deleted=0) AS rps,'
+                           ' (SELECT MAX(created) FROM restore_points rp WHERE rp.vm_id=v.id AND rp.deleted=0) AS newest'
+                           ' FROM vms v WHERE v.gone=1 AND v.uuid IS NOT NULL AND v.id!=?', (cur_id or -1,)):
+            if _uuid_key(r['uuid']) == key and r['rps']:
+                cands.append(dict(r))
+        if not cands:
+            continue
+        old = max(cands, key=lambda r: (r['newest'] or 0, r['rps']))
+        old_conn = c.execute('SELECT name FROM connections WHERE id=?', (old['connection_id'],)).fetchone()
+        if cur_id is not None:
+            # the fresh row has no history: jobs that already name it follow the surviving row
+            for j in c.execute('SELECT id, vm_ids_json FROM jobs WHERE connection_id=?', (connection_id,)).fetchall():
+                ids = json.loads(j['vm_ids_json'] or '[]')
+                if cur_id in ids:
+                    c.execute('UPDATE jobs SET vm_ids_json=? WHERE id=?', (json.dumps([old['id'] if i == cur_id else i for i in ids]), j['id']))
+            c.execute('DELETE FROM vms WHERE id=?', (cur_id,))
+        c.execute('UPDATE vms SET connection_id=?, moref=?, gone=0 WHERE id=?', (connection_id, v['moref'], old['id']))
+        where = f'{old_conn["name"] if old_conn else "connection " + str(old["connection_id"])} ({old["moref"]})'
+        task.log(f'{v["name"]}: the same VM (UUID {v["uuid"]}) left {where}; its {old["rps"]} restore point(s) and CBT state now belong to it here')
+        c.execute('INSERT INTO audit(ts,user,action,detail) VALUES(?,?,?,?)',
+                  (time.time(), 'inventory', 'vm_moved', f'{v["name"]} {old["uuid"]}: {where} -> connection {connection_id} ({v["moref"]})'))
+        moved.append({'vm_id': old['id'], 'name': v['name'], 'from_connection_id': old['connection_id'], 'from_moref': old['moref']})
+    return moved
 
 
 # ── inventory ────────────────────────────────────────────────────────
@@ -127,6 +212,7 @@ def refresh_inventory(task, connection_id):
         raise
     now = time.time()
     with db.conn() as c:
+        moved = adopt_moved_vms(c, task, connection_id, vms)
         seen = set()
         for v in vms:
             seen.add(v['moref'])
@@ -143,14 +229,22 @@ def refresh_inventory(task, connection_id):
         c.execute('UPDATE connections SET last_inventory=?, last_error=NULL, info_json=? WHERE id=?', (now, json.dumps(about), connection_id))
         # proxies that said hello but were never tied to a connection: find their VM here
         # (a proxy given a connection explicitly keeps it: a host that is also managed by a vCenter shows the same VM twice)
-        for p in c.execute('SELECT id,bios_uuid FROM proxies WHERE bios_uuid IS NOT NULL AND (connection_id IS NULL OR (connection_id=? AND vm_moref IS NULL))',
-                           (connection_id,)).fetchall():
-            for v in vms:
-                if uuids.same_vm(v['uuid'], p['bios_uuid']):
-                    c.execute('UPDATE proxies SET connection_id=?, vm_moref=? WHERE id=?', (connection_id, v['moref'], p['id']))
-                    task.log(f'proxy {p["id"]} is VM {v["name"]} on this connection')
-    task.log(f'{len(vms)} VMs')
-    return {'vms': len(vms)}
+        for p in c.execute('SELECT id,name,connection_id,vm_moref,bios_uuid FROM proxies WHERE bios_uuid IS NOT NULL').fetchall():
+            hit = next((v for v in vms if uuids.same_vm(v['uuid'], p['bios_uuid'])), None)
+            if hit is None:
+                c.execute('DELETE FROM proxy_links WHERE proxy_id=? AND connection_id=?', (p['id'], connection_id))
+                continue
+            if p['connection_id'] is None or (p['connection_id'] == connection_id and not p['vm_moref']):
+                c.execute('UPDATE proxies SET connection_id=?, vm_moref=? WHERE id=?', (connection_id, hit['moref'], p['id']))
+                task.log(f'proxy {p["name"]} is VM {hit["name"]} on this connection')
+            elif p['connection_id'] != connection_id:
+                # tied elsewhere, but its VM is visible here too: usable from here as well
+                fresh = c.execute('SELECT 1 FROM proxy_links WHERE proxy_id=? AND connection_id=?', (p['id'], connection_id)).fetchone() is None
+                c.execute('INSERT OR REPLACE INTO proxy_links(proxy_id,connection_id,vm_moref,seen) VALUES(?,?,?,?)', (p['id'], connection_id, hit['moref'], now))
+                if fresh:
+                    task.log(f'proxy {p["name"]} (tied to another connection) is also VM {hit["name"]} here; backups and restores on this connection can use it')
+    task.log(f'{len(vms)} VMs' + (f', {len(moved)} moved here from another connection' if moved else ''))
+    return {'vms': len(vms), 'moved': moved}
 
 
 # ── backup ───────────────────────────────────────────────────────────
@@ -177,6 +271,11 @@ def backup_job(task, job_id, vm_ids=None):
                 vm_row = db.row_to_dict(c.execute('SELECT * FROM vms WHERE id=?', (vm_id,)).fetchone())
             if not vm_row or vm_row['gone']:
                 task.log(f'vm {vm_id}: not in inventory, skipped')
+                failed += 1
+                continue
+            if vm_row['connection_id'] != j['connection_id']:
+                other = connection(vm_row['connection_id'])
+                task.log(f'{vm_row["name"]}: moved to {other["name"]}; add it to a job on that connection (its restore points went with it), skipped')
                 failed += 1
                 continue
             if vm_busy(vm_id):
@@ -240,15 +339,17 @@ def _backup_one(task, api, cr, vm_row, job):
                         c.execute('UPDATE proxies SET connection_id=? WHERE id=?', (cr['id'], p['id']))
                     proxy = p
                     break
-        if cr['type'] == 'proxmox':
-            rp_id, stats = proxmox.backup_vm(task, api, cr, vm_row, run_id, quiesce=bool(job.get('quiesce', 1)))
-        else:
-            rp_id, stats = vmware.backup_vm(task, api, vm_row, run_id, proxy, quiesce=bool(job.get('quiesce', 1)))
+        with connection_slot(task, cr['id'], 'backup'):
+            if cr['type'] == 'proxmox':
+                rp_id, stats = proxmox.backup_vm(task, api, cr, vm_row, run_id, quiesce=bool(job.get('quiesce', 1)))
+            else:
+                rp_id, stats = vmware.backup_vm(task, api, vm_row, run_id, proxy, quiesce=bool(job.get('quiesce', 1)))
         with db.conn() as c:
             c.execute('UPDATE runs SET finished=?, status=?, kind=?, transport=?, bytes_read=?, bytes_stored=?, restore_point_id=? WHERE id=?',
                       (time.time(), 'done', stats['kind'], stats['transport'], stats['bytes_read'], stats.get('bytes_stored', 0), rp_id, run_id))
         if job.get('retention'):
             apply_retention(task, vm_row['id'], job['retention'])
+        on_new_restore_point(task, vm_row['id'], rp_id)
         return {'vm': vm_row['name'], 'status': 'done', 'restore_point': rp_id, **stats}
     except tasks.Cancelled:
         with db.conn() as c:
@@ -268,6 +369,18 @@ def _backup_one(task, api, cr, vm_row, job):
         with db.conn() as c:
             c.execute('UPDATE runs SET finished=?, status=?, error=? WHERE id=?', (time.time(), 'failed', f'{type(e).__name__}: {e}'[:1000], run_id))
         return {'vm': vm_row['name'], 'status': 'failed', 'error': str(e)}
+
+
+def on_new_restore_point(task, vm_id, rp_id):
+    """A fresh restore point of a VM: replication jobs that follow backups of it start a sync."""
+    try:
+        from . import replication
+        started = replication.on_new_restore_point(vm_id, rp_id)
+        for name, tid in started:
+            task.log(f'replication {name}: sync started (task {tid})')
+    except Exception as e:  # noqa: BLE001
+        log.exception('replication trigger failed')
+        task.log(f'WARNING: could not start replication after this backup: {e}')
 
 
 # ── retention ────────────────────────────────────────────────────────
@@ -349,7 +462,7 @@ def restore(task, restore_point_id, options):
             rp = db.row_to_dict(c.execute('SELECT * FROM restore_points WHERE id=?', (new_id,)).fetchone())
     # The source connection is never contacted: a restore reads only the repository, so a
     # vCenter that no longer exists is no obstacle to restoring its VMs elsewhere.
-    with open_api(cr) as api:
+    with open_api(cr) as api, connection_slot(task, cr['id'], 'restore'):
         where = cr['name'] if conn_id == vm_row['connection_id'] else f'{cr["name"]} (a different connection than the backup came from)'
         if cr['type'] == 'proxmox':
             task.log(f'restore point {rp["id"]} of {vm_row["name"]} -> {where} through the Proxmox restore API')
@@ -381,8 +494,15 @@ def register_tasks():
     tasks.register('deploy_proxy', proxy_deploy.deploy_proxy)
     from . import convert
     tasks.register('convert', convert.convert_task)
+    from . import replication
+    tasks.register('replicate', replication.replicate_task)
 
 
 def scheduler_run_job(job_id, created_by):
     run_job(job_id, created_by=created_by)
     maybe_gc()
+
+
+def scheduler_run_replication(replication_id, created_by):
+    from . import replication
+    replication.run(replication_id, created_by=created_by)

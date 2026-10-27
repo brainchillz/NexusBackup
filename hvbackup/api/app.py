@@ -27,7 +27,7 @@ async def lifespan(app):
     log.info('hvbackup %s: data %s, repository %s (%s)', APP_VERSION, config.DATA_DIR, rep.path, rep.id)
     ops.register_tasks()
     tasks.recover_orphans()
-    scheduler.start(ops.scheduler_run_job, every_tick=ops.maybe_gc)
+    scheduler.start(ops.scheduler_run_job, every_tick=ops.maybe_gc, run_replication=ops.scheduler_run_replication)
     yield
     scheduler.stop()
 

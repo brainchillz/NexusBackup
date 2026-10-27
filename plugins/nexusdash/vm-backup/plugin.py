@@ -188,9 +188,10 @@ def _invalidate():
 
 # ── derived views ────────────────────────────────────────────────────
 def _protection(vms, jobs, overdue_hours):
-    """Classify every VM: failed (last run failed), overdue (in an enabled scheduled job but no
-    restore point within the window), protected (has a recent restore point), stale (has
-    restore points but no job), unprotected (nothing)."""
+    """Classify every VM: replica (a standby copy kept by replication, not a VM to protect),
+    failed (last run failed), overdue (in an enabled scheduled job but no restore point within
+    the window), protected (has a recent restore point), stale (has restore points but no
+    job), unprotected (nothing)."""
     now = time.time()
     scheduled = set()
     for j in jobs or []:
@@ -201,7 +202,9 @@ def _protection(vms, jobs, overdue_hours):
         last = v.get('last_restore_point') or {}
         run = v.get('last_run') or {}
         age = now - last['created'] if last.get('created') else None
-        if run.get('status') == 'failed':
+        if v.get('replica_of'):
+            state = 'replica'
+        elif run.get('status') == 'failed':
             state = 'failed'
         elif v['id'] in scheduled and (age is None or age > overdue_hours * 3600):
             state = 'overdue'
@@ -214,7 +217,8 @@ def _protection(vms, jobs, overdue_hours):
         out.append({'id': v['id'], 'name': v['name'], 'connection': v.get('connection_name'), 'power_state': v.get('power_state'),
                     'size_bytes': v.get('size_bytes', 0), 'cbt_enabled': bool(v.get('cbt_enabled')), 'restore_points': v.get('restore_points', 0),
                     'last_backup': last.get('created'), 'last_kind': last.get('kind'), 'jobs': [j['name'] for j in v.get('jobs') or []],
-                    'last_run': run, 'state': state, 'scheduled': v['id'] in scheduled})
+                    'last_run': run, 'state': state, 'scheduled': v['id'] in scheduled,
+                    'replica_of': (v.get('replica_of') or {}).get('name')})
     return out
 
 
@@ -224,7 +228,7 @@ def _overview_data():
     vms = _cached('/vms')
     jobs = _cached('/jobs')
     prot = _protection(vms, jobs, cfg['overdue_hours'])
-    counts = {k: sum(1 for p in prot if p['state'] == k) for k in ('failed', 'overdue', 'protected', 'stale', 'unprotected')}
+    counts = {k: sum(1 for p in prot if p['state'] == k) for k in ('failed', 'overdue', 'protected', 'stale', 'unprotected', 'replica')}
     rep = st.get('repository') or {}
     return {'available': True, 'version': st.get('version'), 'url': cfg['public_url'],
             'vms': st.get('vms', 0), 'protected_vms': st.get('protected_vms', 0), 'restore_points': st.get('restore_points', 0),

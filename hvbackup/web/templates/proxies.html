@@ -13,7 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTable(el, [
       { h: 'Name', f: p => `<b>${esc(p.name)}</b>` },
       { h: 'State', f: p => p.online ? badge('online', 'ok') : (p.deploy_state === 'queued' || p.deploy_state === 'running') ? `<a href="/tasks/${p.deploy_task_id}">${badge('deploying…', 'info')}</a>` : p.deploy_state === 'failed' && !p.last_seen ? `<a href="/tasks/${p.deploy_task_id}">${badge('deploy failed', 'bad')}</a>` : badge('offline', 'bad') },
-      { h: 'Connection', f: p => p.connection_name ? esc(p.connection_name) : '<span class="muted">not seen on any connection yet</span>' },
+      { h: 'Connection', f: p => (p.connection_name ? esc(p.connection_name) : '<span class="muted">not seen on any connection yet</span>') + ((p.also_on || []).length ? ` <span class="muted" title="The proxy VM is also in these connections' inventories; their backups and restores use it too">+ ${p.also_on.map(a => esc(a.connection_name)).join(', ')}</span>` : '') },
       { h: 'VM', f: p => p.vm_name ? `${esc(p.vm_name)} <span class="mono muted">${esc(p.vm_moref || '')}</span>` : p.vm_moref ? `<span class="mono">${esc(p.vm_moref)}</span>` : '' },
       { h: 'Address', f: p => `<span class="mono">${esc(p.address || '')}</span>` },
       { h: 'Agent', f: p => esc(p.version || '') },

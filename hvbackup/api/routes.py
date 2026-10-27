@@ -294,8 +294,13 @@ def vms(connection_id: Optional[int] = None, include_templates: bool = False, us
     with db.conn() as c:
         out = _rows(c, q, args)
         jobs = _rows(c, 'SELECT id,name,vm_ids_json,schedule FROM jobs')
+        replicas = {(r['target_connection_id'], r['moref']): r for r in _rows(c, 'SELECT r.id, r.target_connection_id, r.moref, r.state, r.vm_id, r.synced_at, r.replication_id, v.name AS vm_name FROM replicas r JOIN vms v ON v.id=r.vm_id WHERE r.moref IS NOT NULL')}
         for o in out:
+            o['networks'] = sorted({n.get('network') or '' for n in (o.get('spec') or {}).get('nics') or []})
             o.pop('spec', None)
+            rep_row = replicas.get((o['connection_id'], o['moref']))
+            o['replica_of'] = {'vm_id': rep_row['vm_id'], 'name': rep_row['vm_name'], 'state': rep_row['state'], 'replica_id': rep_row['id'],
+                               'synced_at': rep_row['synced_at'], 'replication_id': rep_row['replication_id']} if rep_row else None
             o['size_bytes'] = sum(d.get('capacity', 0) for d in (o.get('disks') or []))
             last = c.execute('SELECT id,created,kind,allocated_bytes FROM restore_points WHERE vm_id=? AND deleted=0 ORDER BY id DESC LIMIT 1', (o['id'],)).fetchone()
             o['last_restore_point'] = db.row_to_dict(last)
@@ -493,6 +498,160 @@ def convert_rp(rp_id: int, body: ConvertIn, user=Depends(require('restore'))):
                                     restore_point_id=rp_id, target=body.target, options=body.model_dump())}
 
 
+# ── replication: standby copies on another connection ────────────────
+class ReplicationOptions(BaseModel):
+    """Where the replicas land on the target and how they are named. host/datastore/folder/
+    networks work like a restore's: unset means the source's names when they exist on the
+    target, one sensible candidate otherwise, a refusal with the list when there are several."""
+    suffix: str = '-replica'
+    host: Optional[str] = None
+    datastore: Optional[str] = None
+    folder: Optional[str] = None
+    networks: dict[str, str] = Field(default_factory=dict)
+    new_identity: bool = True
+    install_tools: bool = False
+
+
+class ReplicationIn(BaseModel):
+    name: str
+    connection_id: int
+    target_connection_id: int
+    vm_ids: list[int]
+    schedule: Optional[str] = None
+    after_backup: bool = True
+    options: ReplicationOptions = Field(default_factory=ReplicationOptions)
+    enabled: bool = True
+
+
+def _replication_rows(c, where='', args=()):
+    out = _rows(c, f'SELECT r.*, s.name AS connection_name, t.name AS target_connection_name, t.type AS target_type FROM replications r '
+                   f'JOIN connections s ON s.id=r.connection_id JOIN connections t ON t.id=r.target_connection_id {where} ORDER BY r.name', args)
+    for o in out:
+        o['vm_names'] = [x['name'] for x in c.execute(f'SELECT name FROM vms WHERE id IN ({",".join("?" * len(o["vm_ids"]))})', o['vm_ids'])] if o['vm_ids'] else []
+        o['replicas'] = _rows(c, 'SELECT r.*, v.name AS vm_name FROM replicas r JOIN vms v ON v.id=r.vm_id WHERE r.replication_id=? ORDER BY v.name', (o['id'],))
+    return out
+
+
+@r.get('/replications')
+def replications(user=Depends(current_user)):
+    with db.conn() as c:
+        return _replication_rows(c)
+
+
+@r.post('/replications', status_code=201)
+def add_replication(body: ReplicationIn, user=Depends(require('operator'))):
+    if body.schedule and not scheduler.validate(body.schedule):
+        raise HTTPException(400, 'bad cron expression')
+    if body.connection_id == body.target_connection_id:
+        raise HTTPException(400, 'the target must be a different connection than the source (a copy on the same hypervisor is a restore)')
+    if not body.schedule and not body.after_backup:
+        raise HTTPException(400, 'give the replication a schedule, let it follow backups, or both')
+    with db.conn() as c:
+        if not c.execute('SELECT 1 FROM connections WHERE id=?', (body.target_connection_id,)).fetchone():
+            raise HTTPException(404, 'target connection not found')
+        try:
+            c.execute('INSERT INTO replications(name,connection_id,target_connection_id,vm_ids_json,schedule,after_backup,options_json,enabled,created,next_run) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                      (body.name, body.connection_id, body.target_connection_id, json.dumps(body.vm_ids), body.schedule or None, int(body.after_backup),
+                       json.dumps(body.options.model_dump()), int(body.enabled), time.time(), scheduler.next_run(body.schedule) if body.enabled else None))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, str(e))
+        rid = c.execute('SELECT last_insert_rowid()').fetchone()[0]
+    db.audit(user['username'], 'replication_add', body.name)
+    return {'id': rid}
+
+
+class ReplicationPatch(BaseModel):
+    name: Optional[str] = None
+    vm_ids: Optional[list[int]] = None
+    schedule: Optional[str] = None
+    clear_schedule: bool = False
+    after_backup: Optional[bool] = None
+    options: Optional[ReplicationOptions] = None
+    enabled: Optional[bool] = None
+
+
+@r.patch('/replications/{rid}')
+def patch_replication(rid: int, body: ReplicationPatch, user=Depends(require('operator'))):
+    if body.schedule and not scheduler.validate(body.schedule):
+        raise HTTPException(400, 'bad cron expression')
+    sets, args = [], []
+    if body.name is not None: sets.append('name=?'); args.append(body.name)
+    if body.vm_ids is not None: sets.append('vm_ids_json=?'); args.append(json.dumps(body.vm_ids))
+    if body.clear_schedule: sets.append('schedule=NULL'); sets.append('next_run=NULL')
+    elif body.schedule is not None: sets.append('schedule=?'); args.append(body.schedule or None); sets.append('next_run=?'); args.append(scheduler.next_run(body.schedule))
+    if body.after_backup is not None: sets.append('after_backup=?'); args.append(int(body.after_backup))
+    if body.options is not None: sets.append('options_json=?'); args.append(json.dumps(body.options.model_dump()))
+    if body.enabled is not None: sets.append('enabled=?'); args.append(int(body.enabled))
+    if sets:
+        with db.conn() as c:
+            c.execute(f'UPDATE replications SET {",".join(sets)} WHERE id=?', (*args, rid))
+    scheduler.refresh_next_runs()
+    db.audit(user['username'], 'replication_patch', str(rid))
+    return {'ok': True}
+
+
+@r.delete('/replications/{rid}')
+def del_replication(rid: int, user=Depends(require('operator'))):
+    """Removes the replication; its replicas stay (as records and as VMs) until forgotten."""
+    with db.conn() as c:
+        c.execute('DELETE FROM replications WHERE id=?', (rid,))
+    db.audit(user['username'], 'replication_delete', str(rid))
+    return {'ok': True}
+
+
+@r.post('/replications/{rid}/run')
+def run_replication(rid: int, user=Depends(require('operator'))):
+    from ..core import replication
+    db.audit(user['username'], 'replication_run', str(rid))
+    try:
+        return {'task_id': replication.run(rid, created_by=user['username'])}
+    except RuntimeError as e:
+        raise HTTPException(404, str(e))
+
+
+@r.get('/replicas')
+def replicas(user=Depends(current_user)):
+    with db.conn() as c:
+        out = _rows(c, 'SELECT r.*, v.name AS vm_name, v.connection_id AS source_connection_id, c.name AS target_connection_name, c.type AS target_type, p.name AS replication_name '
+                       'FROM replicas r JOIN vms v ON v.id=r.vm_id JOIN connections c ON c.id=r.target_connection_id LEFT JOIN replications p ON p.id=r.replication_id ORDER BY v.name')
+        for o in out:
+            newest = c.execute("SELECT id, created FROM restore_points WHERE vm_id=? AND deleted=0 AND source_rp_id IS NULL ORDER BY id DESC LIMIT 1", (o['vm_id'],)).fetchone()
+            o['newest_rp_id'] = newest['id'] if newest else None
+            o['behind'] = bool(newest and o['source_rp_id'] != newest['id']) if o['state'] not in ('failed_over', 'test') else False
+    return out
+
+
+class FailoverIn(BaseModel):
+    test: bool = False  # power on with the NICs disconnected
+
+
+@r.post('/replicas/{rid}/failover')
+def failover(rid: int, body: FailoverIn = FailoverIn(), user=Depends(require('restore'))):
+    from ..core import replication
+    try:
+        return replication.failover(rid, test=body.test, user=user['username'])
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
+@r.post('/replicas/{rid}/end-test')
+def end_test(rid: int, user=Depends(require('restore'))):
+    from ..core import replication
+    try:
+        return replication.end_test(rid, user=user['username'])
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
+@r.delete('/replicas/{rid}')
+def forget_replica(rid: int, delete_vm: bool = False, user=Depends(require('operator'))):
+    from ..core import replication
+    try:
+        return replication.forget(rid, delete_vm=delete_vm, user=user['username'])
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
 # ── exports (OVF/OVA copies of restore points; read-only on the backup) ──
 class ExportIn(BaseModel):
     format: str = Field(default='ova', pattern='^(ova|ovf)$')
@@ -550,9 +709,11 @@ def proxies(user=Depends(current_user)):
         out = _rows(c, 'SELECT p.id,p.name,p.connection_id,p.vm_moref,p.bios_uuid,p.prefix,p.created,p.last_seen,p.version,p.address,p.enabled,'
                        ' p.deploy_task_id,p.vm_name, c.name AS connection_name, t.state AS deploy_state'
                        ' FROM proxies p LEFT JOIN connections c ON c.id=p.connection_id LEFT JOIN tasks t ON t.id=p.deploy_task_id ORDER BY p.name')
+        links = _rows(c, 'SELECT l.proxy_id, l.connection_id, l.vm_moref, c.name AS connection_name FROM proxy_links l JOIN connections c ON c.id=l.connection_id')
     now = time.time()
     for o in out:
         o['online'] = bool(o['last_seen'] and now - o['last_seen'] < ops.PROXY_FRESH)
+        o['also_on'] = [{'connection_id': l['connection_id'], 'connection_name': l['connection_name'], 'vm_moref': l['vm_moref']} for l in links if l['proxy_id'] == o['id']]
     return out
 
 
@@ -643,8 +804,11 @@ def status(user=Depends(current_user)):
     with db.conn() as c:
         counts = {k: c.execute(q).fetchone()[0] for k, q in {
             'connections': 'SELECT COUNT(*) FROM connections',
-            'vms': 'SELECT COUNT(*) FROM vms WHERE gone=0 AND is_template=0',
+            'vms': 'SELECT COUNT(*) FROM vms v WHERE gone=0 AND is_template=0 AND NOT EXISTS (SELECT 1 FROM replicas r WHERE r.target_connection_id=v.connection_id AND r.moref=v.moref)',
             'protected_vms': 'SELECT COUNT(DISTINCT vm_id) FROM restore_points WHERE deleted=0',
+            'replications': 'SELECT COUNT(*) FROM replications WHERE enabled=1',
+            'replicas': "SELECT COUNT(*) FROM replicas WHERE moref IS NOT NULL",
+            'replicas_stale': "SELECT COUNT(*) FROM replicas r WHERE r.moref IS NOT NULL AND r.state NOT IN ('failed_over','test') AND (r.state IN ('failed','dirty') OR r.source_rp_id IS NOT (SELECT MAX(id) FROM restore_points rp WHERE rp.vm_id=r.vm_id AND rp.deleted=0 AND rp.source_rp_id IS NULL))",
             'restore_points': 'SELECT COUNT(*) FROM restore_points WHERE deleted=0',
             'jobs': 'SELECT COUNT(*) FROM jobs WHERE enabled=1',
             'running_tasks': "SELECT COUNT(*) FROM tasks WHERE state='running'",

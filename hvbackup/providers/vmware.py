@@ -249,16 +249,20 @@ class VMware:
 
     # ── hot-add ──────────────────────────────────────────────────────
     def proxy_vm(self, proxy_row):
+        """The proxy's VM as this connection sees it. A proxy tied to another connection whose
+        VM is also visible here (proxy_links) is addressed by its moref on this connection."""
         vm = None
-        if proxy_row.get('vm_moref'):
+        via_link = bool(proxy_row.get('via_link'))
+        moref = proxy_row.get('link_moref') if via_link else proxy_row.get('vm_moref')
+        if moref:
             try:
-                vm = self.vm_by_moref(proxy_row['vm_moref'])
+                vm = self.vm_by_moref(moref)
                 vm.name  # noqa: B018  probe existence
             except Exception:  # noqa: BLE001
                 vm = None
         if vm is None and proxy_row.get('bios_uuid'):
             vm = self.vm_by_uuid(proxy_row['bios_uuid'])
-            if vm is not None:
+            if vm is not None and not via_link:
                 with db.conn() as c:
                     c.execute('UPDATE proxies SET vm_moref=? WHERE id=?', (vm._moId, proxy_row['id']))
         if vm is None:
@@ -742,7 +746,7 @@ def _restore_into(task, api, rp, options, proxy_row, rep, manifest, spec, cs, na
                             guestId=spec['guest_id'], firmware=spec.get('firmware', 'bios'),
                             files=vim.vm.FileInfo(vmPathName=vm_folder), deviceChange=dev_changes,
                             bootOptions=vim.vm.BootOptions(efiSecureBootEnabled=bool(spec.get('secure_boot'))),
-                            annotation=f'Restored by hvbackup from restore point {rp["id"]} of {spec["name"]}')
+                            annotation=options.get('annotation') or f'Restored by hvbackup from restore point {rp["id"]} of {spec["name"]}')
     if not options.get('new_identity', True) and spec.get('uuid'):
         cfg.uuid = spec['uuid']
     vm = wait_task(folder.CreateVM_Task(config=cfg, pool=pool, host=host), 'create VM')
@@ -751,16 +755,21 @@ def _restore_into(task, api, rp, options, proxy_row, rep, manifest, spec, cs, na
         wait_task(vm.PowerOnVM_Task(), 'power on')
         task.log('powered on')
     vct.done()
-    return {'moref': vm._moId, 'name': vm.name}
+    return {'moref': vm._moId, 'name': vm.name, 'host': host_name, 'datastore': ds.name,
+            'disks': [{'key': d['key'], 'file': path, 'capacity': d['capacity']} for d, path in created]}
 
 
-def _write_via_proxy(task, api, proxy_row, descriptor, size, records, cs, prog):
+def _write_via_proxy(task, api, proxy_row, descriptor, size, records, cs, prog, write_zeros=False):
+    """Write the given (chunk index, hash) records into a disk through the proxy. A fresh thin
+    disk needs no zero chunks written; an existing replica disk does (write_zeros), so blocks
+    that became free since the last sync are cleared too."""
     with proxy_lock(proxy_row['id']):
         proxy = api.proxy_vm(proxy_row)
         task.log(f'hot-adding {descriptor} to proxy {proxy.name} for writing')
         added, bus, unit = api.hot_add(proxy, descriptor, 'persistent')
         try:
-            wid = work.enqueue(proxy_row['id'], 'write', {'size': size, 'bus': bus, 'unit': unit, 'chunk_size': cs, 'workers': 4}, task_id=task.id)
+            wid = work.enqueue(proxy_row['id'], 'write', {'size': size, 'bus': bus, 'unit': unit, 'chunk_size': cs, 'workers': 4,
+                                                          'write_zeros': bool(write_zeros)}, task_id=task.id)
             with open(work.records_path(wid), 'wb') as f:
                 f.write(base.pack_records(records))
             work.wait(task, wid, len(records) * cs, 'write', on_progress=prog)
@@ -946,3 +955,55 @@ def wipe_vapp_properties(vm, keys):
 def guest_state(vm):
     g = vm.guest
     return {'ip': g.ipAddress, 'tools': str(g.toolsRunningStatus), 'power': str(vm.runtime.powerState)}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# replicas: standby copies kept up to date by core/replication.py
+# ═══════════════════════════════════════════════════════════════════════
+def vm_disks(vm):
+    """The VM's virtual disks in controller/unit order: [{file, capacity, key, controller_key, unit}]."""
+    out = []
+    for d in vm.config.hardware.device:
+        if isinstance(d, vim.vm.device.VirtualDisk):
+            out.append({'file': getattr(d.backing, 'fileName', ''), 'capacity': d.capacityInBytes, 'key': d.key,
+                        'controller_key': d.controllerKey, 'unit': d.unitNumber, 'device': d})
+    out.sort(key=lambda x: (x['controller_key'], x['unit']))
+    return out
+
+
+def extend_disk(api, vm, disk, new_capacity):
+    """Grow one of the VM's disks (never shrink) by reconfiguring the VM."""
+    dev = disk['device']
+    dev.capacityInBytes = new_capacity
+    dev.capacityInKB = new_capacity // 1024
+    wait_task(vm.ReconfigVM_Task(vim.vm.ConfigSpec(deviceChange=[vim.vm.device.VirtualDeviceSpec(operation='edit', device=dev)])), 'extend disk')
+
+
+def set_nics_connected(vm, connected):
+    """Connect or disconnect every NIC at power-on (test failovers run isolated)."""
+    changes = []
+    for d in vm.config.hardware.device:
+        if isinstance(d, vim.vm.device.VirtualEthernetCard):
+            d.connectable = vim.vm.device.VirtualDevice.ConnectInfo(startConnected=connected, connected=connected, allowGuestControl=True)
+            changes.append(vim.vm.device.VirtualDeviceSpec(operation='edit', device=d))
+    if changes:
+        wait_task(vm.ReconfigVM_Task(vim.vm.ConfigSpec(deviceChange=changes)), 'set NIC connection state')
+
+
+def power_on(vm):
+    if vm.runtime.powerState != 'poweredOn':
+        wait_task(vm.PowerOnVM_Task(), 'power on')
+
+
+def power_off(vm):
+    if vm.runtime.powerState != 'poweredOff':
+        wait_task(vm.PowerOffVM_Task(), 'power off')
+
+
+def destroy_vm(vm):
+    power_off(vm)
+    wait_task(vm.Destroy_Task(), 'destroy VM')
+
+
+def nic_macs(vm):
+    return [d.macAddress or '' for d in vm.config.hardware.device if isinstance(d, vim.vm.device.VirtualEthernetCard)]

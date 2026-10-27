@@ -13,6 +13,8 @@ Client side (any machine; HVB_URL + HVB_TOKEN, or ~/.config/hvbackup/client.conf
   hvbackup jobs list|add|run|delete
   hvbackup runs list
   hvbackup restore-points list [--vm <vm>]
+  hvbackup replications list|add|run|delete    standby copies on another connection, synced after backups or on a schedule
+  hvbackup replicas list|failover|test|end-test|forget [--delete-vm]
   hvbackup restore <rp> --name NAME [--connection C] [--host H] [--datastore DS] [--network SRC=DST]... [--power-on] [--keep-identity] [--install-tools] [--wait]
   hvbackup convert <rp> --to proxmox|vmware [--install-tools] [--keep-identity] [--wait]   restore point for the other platform (Linux guests)
   hvbackup connections placement <id|name>      hosts, datastores and networks to restore onto
@@ -333,6 +335,54 @@ def cmd_restore(args):
         print(json.dumps(t.get('result', {}).get('result'), indent=2, default=str))
 
 
+def cmd_replications(args):
+    c = Client()
+    if args.action == 'list':
+        rows = c.call('GET', '/replications')
+        out(args, rows, [{**r, 'vms': ','.join(r['vm_names']), 'trigger': ' + '.join(x for x in ['after backup' if r['after_backup'] else '', r['schedule'] or ''] if x) or 'manual',
+                          'next_run': fmt_ts(r['next_run']), 'last_run': fmt_ts(r['last_run']),
+                          'replicas': ' '.join(f'{x["vm_name"]}:{x["state"]}' for x in r['replicas'])} for r in rows],
+            ['id', 'name', 'connection_name', 'target_connection_name', 'vms', 'trigger', 'enabled', 'next_run', 'last_run', 'last_status', 'replicas'])
+    elif args.action == 'add':
+        if not args.name or not args.vms or not args.to:
+            sys.exit('usage: hvbackup replications add --name N --to <connection> --vms VM... [--schedule CRON] [--no-after-backup] [--suffix S] [--host H] [--datastore DS] [--folder F] [--network SRC=DST]... [--keep-identity] [--install-tools]')
+        ids = [resolve_vm(c, v) for v in args.vms]
+        conns = {v['id']: v['connection_id'] for v in c.call('GET', '/vms')}
+        nets = {}
+        for mm in args.network or []:
+            if '=' not in mm:
+                sys.exit(f'--network wants SOURCE=TARGET, got {mm!r}')
+            a, b = mm.split('=', 1)
+            nets[a] = b
+        body = {'name': args.name, 'connection_id': args.connection or conns[ids[0]], 'target_connection_id': resolve_connection(c, args.to), 'vm_ids': ids,
+                'schedule': args.schedule, 'after_backup': not args.no_after_backup,
+                'options': {'suffix': args.suffix, 'host': args.host, 'datastore': args.datastore, 'folder': args.folder, 'networks': nets,
+                            'new_identity': not args.keep_identity, 'install_tools': args.install_tools}}
+        out(args, c.call('POST', '/replications', json=body))
+    elif args.action == 'run':
+        res = c.call('POST', f'/replications/{args.id}/run')
+        out(args, res)
+        if args.wait and not args.json:
+            t = wait_task(c, res['task_id'])
+            print(json.dumps(t.get('result', {}).get('result'), indent=2, default=str))
+    elif args.action == 'delete':
+        out(args, c.call('DELETE', f'/replications/{args.id}'))
+
+
+def cmd_replicas(args):
+    c = Client()
+    if args.action == 'list':
+        rows = c.call('GET', '/replicas')
+        out(args, rows, [{**r, 'synced_at': fmt_ts(r['synced_at']), 'behind': 'yes' if r['behind'] else ''} for r in rows],
+            ['id', 'vm_name', 'name', 'target_connection_name', 'moref', 'state', 'behind', 'source_rp_id', 'newest_rp_id', 'synced_at', 'last_error'])
+    elif args.action in ('failover', 'test'):
+        out(args, c.call('POST', f'/replicas/{args.id}/failover', json={'test': args.action == 'test'}, timeout=600))
+    elif args.action == 'end-test':
+        out(args, c.call('POST', f'/replicas/{args.id}/end-test', timeout=600))
+    elif args.action == 'forget':
+        out(args, c.call('DELETE', f'/replicas/{args.id}', params={'delete_vm': 'true' if args.delete_vm else 'false'}, timeout=600))
+
+
 def cmd_tasks(args):
     c = Client()
     if args.action == 'list':
@@ -478,6 +528,13 @@ def main(argv=None):
     p.add_argument('--keep-identity', action='store_true', help='keep the MAC addresses and UUID instead of fresh ones')
     p.add_argument('--install-tools', action='store_true', help='install qemu-guest-agent / open-vm-tools on the copy\'s first boot')
     p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_convert)
+    p = sub.add_parser('replications', help='standby copies of VMs on another connection'); p.add_argument('action', choices=['list', 'add', 'run', 'delete']); p.add_argument('id', nargs='?')
+    p.add_argument('--name'); p.add_argument('--to', help='target connection id or name'); p.add_argument('--vms', nargs='*', default=[]); p.add_argument('--connection', type=int, help='source connection (default: the VMs\')')
+    p.add_argument('--schedule', help='cron, e.g. "0 */4 * * *"'); p.add_argument('--no-after-backup', action='store_true', help='do not sync after each backup')
+    p.add_argument('--suffix', default='-replica'); p.add_argument('--host'); p.add_argument('--datastore'); p.add_argument('--folder'); p.add_argument('--network', action='append', metavar='SOURCE=TARGET')
+    p.add_argument('--keep-identity', action='store_true'); p.add_argument('--install-tools', action='store_true'); p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_replications)
+    p = sub.add_parser('replicas', help='standby copies: list, fail over, test boot, end a test, forget'); p.add_argument('action', choices=['list', 'failover', 'test', 'end-test', 'forget']); p.add_argument('id', nargs='?', type=int)
+    p.add_argument('--delete-vm', action='store_true', help='forget: also destroy the VM on the target'); p.set_defaults(fn=cmd_replicas)
     p = sub.add_parser('tasks'); p.add_argument('action', choices=['list', 'show', 'wait', 'cancel']); p.add_argument('id', nargs='?', type=int); p.add_argument('--limit', type=int, default=30); p.set_defaults(fn=cmd_tasks)
     p = sub.add_parser('proxies', help='proxy VMs: list, add (register one you install yourself), deploy (the server builds one), image, delete')
     p.add_argument('action', choices=['list', 'add', 'deploy', 'image', 'delete']); p.add_argument('name', nargs='?'); p.add_argument('--connection', help='id or name')

@@ -3,7 +3,7 @@
 <div class="toolbar">
   <input id="filter" placeholder="Filter by name, guest, host…" style="min-width:220px">
   <select id="conn"><option value="">All connections</option></select>
-  <select id="prot"><option value="">All</option><option value="protected">Protected</option><option value="unprotected">Unprotected</option></select>
+  <select id="prot"><option value="">All</option><option value="protected">Protected</option><option value="unprotected">Unprotected</option><option value="replicas">Replicas</option></select>
   <span class="spacer"></span>
   <span id="selinfo" class="muted"></span>
   <button class="btn primary" id="protect" hidden>Protect selected…</button>
@@ -17,6 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let vms = [], conns = [];
   const q = () => ({ f: document.getElementById('filter').value.toLowerCase(), c: document.getElementById('conn').value, p: document.getElementById('prot').value });
   function protection(v) {
+    if (v.replica_of) return `<span class="muted">standby copy</span>`;
     if (!v.last_restore_point) return badge('unprotected', 'warn');
     const age = Date.now() / 1000 - v.last_restore_point.created;
     return badge(ago(v.last_restore_point.created), age > 2 * 86400 ? 'warn' : 'ok') + ` <span class="muted rp-kind">${esc(v.last_restore_point.kind)}</span>`;
@@ -28,12 +29,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function draw() {
     const { f, c, p } = q();
-    const rows = vms.filter(v => (!c || String(v.connection_id) === c) && (!p || (p === 'protected') === !!v.last_restore_point)
+    const rows = vms.filter(v => (!c || String(v.connection_id) === c)
+      && (!p || (p === 'replicas' ? !!v.replica_of : !v.replica_of && (p === 'protected') === !!v.last_restore_point))
       && (!f || [v.name, v.guest, v.host, v.connection_name].join(' ').toLowerCase().includes(f)));
     const cols = [];
     if (can('operator')) cols.push({ h: '', cls: 'checkcol', f: v => `<input type="checkbox" data-sel="${v.id}" ${sel.has(v.id) ? 'checked' : ''}>` });
     cols.push(
-      { h: 'Name', f: v => `<a href="/vms/${v.id}"><b>${esc(v.name)}</b></a>${v.cbt_enabled ? '' : ' <span class="muted" title="Changed block tracking is enabled on the first backup">no CBT</span>'}` },
+      { h: 'Name', f: v => `<a href="/vms/${v.id}"><b>${esc(v.name)}</b></a>${v.replica_of ? ` <a href="/replication" title="Standby copy of ${esc(v.replica_of.name)} kept by replication (${esc(v.replica_of.state)})">${badge('replica of ' + v.replica_of.name, v.replica_of.state === 'synced' ? 'info' : v.replica_of.state === 'failed_over' ? 'warn' : 'gray')}</a>` : ''}${v.cbt_enabled ? '' : ' <span class="muted" title="Changed block tracking is enabled on the first backup">no CBT</span>'}` },
       { h: 'Connection', f: v => esc(v.connection_name) + ' ' + badge(v.connection_type, 'info') },
       { h: 'Power', f: v => powerBadge(v.power_state) },
       { h: 'Guest', f: v => `<span title="${esc(v.guest)}">${esc((v.guest || '').slice(0, 28))}</span>` + (v.tools === 'guestToolsRunning' ? '' : ' <span class="muted" title="VMware Tools not running: backups are crash-consistent">no tools</span>') },

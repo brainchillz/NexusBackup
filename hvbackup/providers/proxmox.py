@@ -429,16 +429,18 @@ def restore_vm(task, api: Proxmox, cr, rp, options):
     vmid = int(options.get('vmid') or 0) or api.next_vmid()
     src_name = spec.get('name') or f'{vmtype} {src_vmid}'
     name = options.get('name') or src_name
-    task.log(f'restoring {src_name} ({vmtype} {src_vmid}, restore point {rp["id"]}) as {vmtype} {vmid} {name!r} on {node} / {storage} from {archive}')
+    force = bool(options.get('force'))  # replication: restore over the existing (stopped) replica, keeping its vmid
+    task.log(f'restoring {src_name} ({vmtype} {src_vmid}, restore point {rp["id"]}) as {vmtype} {vmid} {name!r} on {node} / {storage} from {archive}'
+             + (' (replacing the existing guest)' if force else ''))
     converted = bool(spec.get('converted_from'))
     # a converted point already carries fresh MACs and UUID (pinned inside the guest), so
     # Proxmox must not regenerate them
     unique = bool(options.get('new_identity', True)) and not converted
     if vmtype == 'qemu':
-        upid = api.post(f'/nodes/{node}/qemu', vmid=vmid, archive=archive, storage=storage, unique=unique)
+        upid = api.post(f'/nodes/{node}/qemu', vmid=vmid, archive=archive, storage=storage, unique=unique, force=force or None)
     else:
         upid = api.post(f'/nodes/{node}/lxc', vmid=vmid, ostemplate=archive, restore=True, storage=storage, unique=unique,
-                        unprivileged=True)
+                        unprivileged=True, force=force or None)
     task.log(f'PVE task {upid}')
     status = api.wait_upid(node, upid, task)
     if status != 'OK':
@@ -473,8 +475,94 @@ def restore_vm(task, api: Proxmox, cr, rp, options):
         else:
             api.put(f'/nodes/{node}/{vmtype}/{vmid}/config', **changes)
         task.log('applied: ' + ', '.join(f'{k}={v}' for k, v in changes.items()))
+    if options.get('description'):
+        api.put(f'/nodes/{node}/{vmtype}/{vmid}/config', description=options['description'])
     if options.get('power_on'):
         up = api.post(f'/nodes/{node}/{vmtype}/{vmid}/status/start')
         api.wait_upid(node, up, task)
         task.log('started')
     return {'moref': f'{vmtype}/{vmid}', 'name': name, 'node': node, 'vmid': vmid}
+
+
+# ── guests: small operations the replication code needs ─────────────
+def locate(api: Proxmox, moref):
+    """'qemu/105' -> (vmtype, vmid, node, status) or None when the guest is gone."""
+    vmtype, vmid = moref.split('/')
+    for r in api.get('/cluster/resources', type='vm') or []:
+        if r.get('type') == vmtype and str(r.get('vmid')) == vmid:
+            return vmtype, int(vmid), r['node'], r.get('status', '')
+    return None
+
+
+def guest_macs(api: Proxmox, node, vmtype, vmid):
+    cfg = api.get(f'/nodes/{node}/{vmtype}/{vmid}/config') or {}
+    out = {}
+    for key in sorted(cfg):
+        if NET_KEY_RE.match(key):
+            first, opts = parse_kv(cfg[key])
+            mac = opts.get('hwaddr', '')
+            if vmtype == 'qemu':
+                mac = next((v for k, v in opts.items() if k in NIC_MODELS), '') or (first.split('=', 1)[1] if '=' in first else '')
+            out[key] = mac
+    return out
+
+
+def set_guest_macs(api: Proxmox, node, vmtype, vmid, macs):
+    """Give the guest's NICs the recorded MAC addresses (a rebuilt replica keeps its identity)."""
+    cfg = api.get(f'/nodes/{node}/{vmtype}/{vmid}/config') or {}
+    changes = {}
+    for key, mac in macs.items():
+        if key not in cfg or not mac:
+            continue
+        first, opts = parse_kv(cfg[key])
+        if vmtype == 'qemu':
+            model = next((k for k in opts if k in NIC_MODELS), None)
+            if model:
+                if opts[model].lower() == mac.lower():
+                    continue
+                opts[model] = mac
+            elif '=' in first:
+                first = first.split('=', 1)[0] + '=' + mac
+        else:
+            if opts.get('hwaddr', '').lower() == mac.lower():
+                continue
+            opts['hwaddr'] = mac
+        changes[key] = ','.join(([first] if first else []) + [f'{k}={v}' for k, v in opts.items()])
+    if changes:
+        api.put(f'/nodes/{node}/{vmtype}/{vmid}/config', **changes)
+    return changes
+
+
+def set_links_down(api: Proxmox, node, vmtype, vmid, down):
+    """link_down=1 on every NIC (isolated test failover) or back to normal."""
+    cfg = api.get(f'/nodes/{node}/{vmtype}/{vmid}/config') or {}
+    changes = {}
+    for key, val in cfg.items():
+        if not NET_KEY_RE.match(key):
+            continue
+        first, opts = parse_kv(val)
+        if down:
+            opts['link_down'] = '1'
+        else:
+            opts.pop('link_down', None)
+        changes[key] = ','.join(([first] if first else []) + [f'{k}={v}' for k, v in opts.items()])
+    if changes:
+        api.put(f'/nodes/{node}/{vmtype}/{vmid}/config', **changes)
+
+
+def start_guest(api: Proxmox, node, vmtype, vmid, task=None):
+    up = api.post(f'/nodes/{node}/{vmtype}/{vmid}/status/start')
+    api.wait_upid(node, up, task)
+
+
+def stop_guest(api: Proxmox, node, vmtype, vmid, task=None):
+    up = api.post(f'/nodes/{node}/{vmtype}/{vmid}/status/stop')
+    api.wait_upid(node, up, task)
+
+
+def destroy_guest(api: Proxmox, node, vmtype, vmid, task=None):
+    loc = locate(api, f'{vmtype}/{vmid}')
+    if loc and loc[3] == 'running':
+        stop_guest(api, node, vmtype, vmid, task)
+    up = api.delete(f'/nodes/{node}/{vmtype}/{vmid}', purge=1, **({'destroy-unreferenced-disks': 1} if vmtype == 'qemu' else {}))
+    api.wait_upid(node, up, task)

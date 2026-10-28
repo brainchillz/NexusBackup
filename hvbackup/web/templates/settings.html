@@ -14,7 +14,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const st = await api('GET', '/api/v1/status');
     const r = st.repository;
     document.getElementById('repo').innerHTML = [['Path', `<span class="mono">${esc(r.path)}</span>`], ['Repository ID', `<span class="mono">${esc(r.id)}</span>`], ['Chunks', esc(r.chunks)], ['Stored', esc(fmtBytes(r.stored_bytes))],
-      ['Free on volume', esc(fmtBytes(r.free_bytes)) + ' of ' + esc(fmtBytes(r.total_bytes))], ['Last garbage collection', esc(st.last_gc ? fmtTime(st.last_gc) : 'never')], ['Server version', esc(st.version)]].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+      ['Free on volume', esc(fmtBytes(r.free_bytes)) + ' of ' + esc(fmtBytes(r.total_bytes))], ['Last garbage collection', esc(st.last_gc ? fmtTime(st.last_gc) : 'never')], ['Server version', esc(st.version)],
+      ['VMware ↔ Proxmox conversion', st.conversion ? (st.conversion.available ? 'available' + (st.conversion.kvm ? ' (KVM)' : ' (no /dev/kvm: slower)') : 'unavailable, missing ' + esc(st.conversion.missing.join(', '))) : '']].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   }
   async function loadTokens() {
     renderTable(document.getElementById('tokens'), [

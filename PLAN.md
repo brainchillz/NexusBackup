@@ -699,7 +699,12 @@ hints and keys archive volumes `drive-scsiN`; virt-v2v trims the filesystem,
 so zero extents of the overlay must become zero chunks without a read;
 libguestfs needs a readable kernel and the kvm group for the service user.
 Open: Windows (virtio-win injection, hivex), a KVM test boot before the
-restore, the Docker image without libguestfs, privileged containers.
+restore. Done 2026-10-28 (0.3.0): the container image carries virt-v2v,
+libguestfs and a kernel for the appliance (built on the data volume at first
+use; `compose.kvm.yml` maps `/dev/kvm` in, `get.sh --docker` adds it when the
+host has the device), `GET /status` reports conversion availability and the
+restore and replication dialogs refuse a cross-platform target up front when
+the server lacks the tools.
 Exit criteria for the full phase: round trip a Windows Server and a Linux VM
 in both directions with working networking and guest agent.
 
@@ -767,9 +772,8 @@ order of how soon they bite:
   offline OVA (today `HVB_PROXY_IMAGE*`).
 - Build the coming features UI-first: SSO (Phase 4) as Settings, not
   config keys; notifications (SMTP, webhook) likewise.
-- Conversion in Docker: the image lacks libguestfs, qemu-nbd and
-  `/dev/kvm`; until the image carries them the UI must say conversion is
-  unavailable instead of failing mid-restore.
+- Conversion in Docker: done 2026-10-28 (image with the tool chain,
+  availability in `/status`, the dialogs say so up front).
 - Minor: session lifetime and port as settings; an update-available
   notice in the UI since container users never see release notes.
 

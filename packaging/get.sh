@@ -91,6 +91,10 @@ case "$MODE" in
             [ -n "$URL" ] && sed -i "s|^HVB_URL=.*|HVB_URL=$URL|" .env
             [ -n "$REPO" ] && sed -i "s|^HVB_REPO_HOST=.*|HVB_REPO_HOST=$REPO|" .env
         fi
+        # /dev/kvm makes VMware <-> Proxmox conversion several times faster; map it in when the host has it
+        if [ -c /dev/kvm ] && ! grep -q '^COMPOSE_FILE=' .env; then
+            echo 'COMPOSE_FILE=compose.yml:compose.kvm.yml' >> .env; echo "==> /dev/kvm found: conversion runs with KVM (compose.kvm.yml)"
+        fi
         . ./.env; mkdir -p "$HVB_REPO_HOST"
         FRESH=1; [ -n "$(docker compose ps -aq 2>/dev/null)" ] && FRESH=0
         [ -n "$ADMIN" ] || [ "$FRESH" = 0 ] || ADMIN=admin

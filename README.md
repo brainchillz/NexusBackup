@@ -4,7 +4,10 @@ Hypervisor backup server for Linux (command and package: `hvbackup`). It backs
 up running VMs from vCenter, a standalone ESXi host or a Proxmox VE cluster
 into one deduplicated store, without agents in the guests and without any
 VMware SDK, restores them as new VMs, and converts Linux VMs between the two
-platforms. Backups are
+platforms. It keeps standby replicas of VMs on another cluster or platform,
+synced after every backup or on a schedule, with failover and test boots, and
+it manages several vCenters, ESXi hosts and Proxmox clusters from one server.
+Backups are
 incremental forever: after the first full, only changed blocks cross the
 network. Everything is driven by a REST API; the web UI and the CLI are clients
 of it. Tested against vCenter 8.0.3 and Proxmox VE 9.2.
@@ -21,6 +24,8 @@ once. Measured through the proxy: over 360 MiB/s including hashing and
 compression.
 
 Design and test results: [PLAN.md](PLAN.md). Install guide: [docs/INSTALL.md](docs/INSTALL.md).
+Letting an AI assistant do the install for you: [Agent_Install.md](Agent_Install.md).
+Changes per release: [CHANGELOG.md](CHANGELOG.md).
 
 ![Dashboard](docs/images/dashboard.png)
 
@@ -30,7 +35,7 @@ Design and test results: [PLAN.md](PLAN.md). Install guide: [docs/INSTALL.md](do
 |---|---|
 | Backup server | Linux, Python 3.12 or newer with `python3-venv`, systemd for the native install or Docker for the container. Any filesystem for the repository (ZFS or btrfs recommended). Network reach to vCenter and every ESXi host on TCP 443. Proxies and browsers reach the server on TCP 8460. |
 | Proxy VM (one per vSphere cluster or standalone host) | A small Linux VM on that vSphere with access to the datastores of the VMs it backs up. 2 vCPU, 2 GB RAM, Python 3.12+, a SCSI controller (ParaVirtual or LSI Logic). The agent runs as root (SCSI rescans and raw disk reads). It holds no vSphere credentials. |
-| Conversion (optional) | `virt-v2v` and `libguestfs-tools` on the backup server (native install; the installer adds them on Debian/Ubuntu). |
+| Conversion (optional) | `virt-v2v` and `libguestfs-tools` on the backup server; the installer adds them on Debian/Ubuntu and the container image carries them. `/dev/kvm` on the server makes it several times faster (the container gets it through `compose.kvm.yml`). |
 | Proxmox VE | PVE 9 (backup-provider API). On every node: the plug-in from the server's installer, which adds `libnbd-bin` and a Python venv. Nodes reach the server on TCP 8460. |
 | vSphere | vCenter or ESXi 7.0 U3 or newer. A **paid or evaluation licence**: the free ESXi licence makes the API read-only, so snapshots fail. VMs you back up must not already carry snapshots named `hvbackup`. |
 
@@ -105,7 +110,9 @@ named volume `hvbackup-data`. In Docker, every CLI command runs as
 `docker compose exec hvbackup hvbackup ...`. The container runs as root so it
 can write to whatever host directory you mount; files in the repository are
 owned by root. Your own certificate goes in through a Compose override, see
-the guide.
+the guide. The image carries the conversion tool chain; on a host with
+`/dev/kvm`, add `compose.kvm.yml` (`COMPOSE_FILE=compose.yml:compose.kvm.yml`
+in `.env`) so conversions run with hardware virtualization.
 
 ### First run
 
@@ -426,11 +433,14 @@ installed on first boot; a 20 GiB Ubuntu 24.04 VM from Proxmox to vCenter in
 12 s plus 1 s, 34 MiB new, booted on a paravirtual SCSI controller with
 VMware Tools running.
 
-Requirements: the native install with `virt-v2v` and `libguestfs-tools`
-(the installer adds them on Debian/Ubuntu, makes the kernel readable for
-libguestfs and puts the `hvbackup` user in the `kvm` group; without `/dev/kvm`
-the fix-ups still work, several times slower). The Docker image does not
-carry libguestfs yet. New identity (the default) gives the copy fresh MAC
+Requirements: `virt-v2v` and `libguestfs-tools` on the server. The native
+installer adds them on Debian/Ubuntu, makes the kernel readable for
+libguestfs and puts the `hvbackup` user in the `kvm` group; the container
+image carries them and builds the libguestfs appliance on the data volume at
+first use. Without `/dev/kvm` the fix-ups still work, several times slower.
+**Settings** shows whether conversion is available on this server, and the
+restore and replication dialogs say so up front when it is not. New identity
+(the default) gives the copy fresh MAC
 addresses and UUID; the copy keeps the guest's host name and DHCP client
 identity, so do not run it next to the original on the same network. A TPM
 is not carried over and secure boot is turned off on the copy, both logged.
@@ -598,7 +608,7 @@ both.
 | `… is a template: vSphere cannot snapshot templates` | Back up now or a job hit a VM template | Convert the template to a VM, or clone it and back up the clone. Templates are not included in the plug-in VM lists. |
 | Proxmox: `cannot setup backup access without fleecing` | A backup job made in the Proxmox UI targets the hvbackup storage without fleecing | Edit the job, Advanced → enable fleecing. Jobs started from this server set it automatically. |
 | Proxmox: `vzdump reported success but the node plug-in never completed` | The node could not reach the server or the storage token is stale | On the node: `journalctl -u pvedaemon`; re-run the installer and **Register storage** (rotates the token). |
-| `conversion needs virt-v2v-in-place ... on the backup server` | A cross-platform restore on a server without libguestfs | `apt install virt-v2v libguestfs-tools`, rerun `packaging/install.sh` (kernel readability, kvm group), or convert on a native server |
+| `conversion needs virt-v2v-in-place ... on the backup server`, or **Settings** says conversion is unavailable | A cross-platform restore on a native server without libguestfs, or a container from an image older than 0.3.0 | `apt install virt-v2v libguestfs-tools`, rerun `packaging/install.sh` (kernel readability, kvm group); Docker: `docker compose pull && docker compose up -d` |
 | `Windows guests are not converted in this release` / `no operating system was found` | Conversion is limited to installed Linux guests | Restore to the same platform, or wait for Windows support |
 | Converted copy boots without network | The guest configuration named an interface the conversion could not find, or matches a MAC it did not know | Check `/etc/systemd/network/70-hvbackup-*.link` in the copy; the task log lists the names found and the files rewritten |
 | `VM is powered on and no proxy is available on this connection` | No online proxy is tied to that connection | Bring a proxy online; make sure it is a VM on that vSphere. Run **Connections → Refresh** so the server matches it by BIOS UUID, or set its connection when creating it. |
@@ -637,7 +647,8 @@ scheduled replication to another connection with failover and test boots;
 several vCenters (moved VMs keep their history, plug-in across Enhanced
 Linked Mode, shared proxies, per-connection concurrency); web
 UI, CLI, REST API with OpenAPI; vSphere Client plug-in; Nexus Dashboard
-plug-ins (declarative and Python tiers); native, deb and Docker installs.
+plug-ins (declarative and Python tiers); native, deb and Docker installs,
+conversion included in the container image.
 
 Planned: Windows guests in conversion (virtio driver injection), Nexus SSO and
 OpenID Connect logins, instant recovery (boot from the repository while the

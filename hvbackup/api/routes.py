@@ -470,8 +470,27 @@ class RestoreIn(BaseModel):
     install_tools: bool = False  # cross-platform restores: install the target's guest tools on the copy's first boot
 
 
+def _conversion_guard(src_platform, target_type):
+    """Refuse a cross-platform restore or replication up front when this server cannot convert
+    (a native install without libguestfs), instead of failing minutes into the task."""
+    from ..core import convert
+    target = 'proxmox' if target_type == 'proxmox' else 'vmware'
+    if (src_platform or 'vmware') == target:
+        return
+    missing = convert.missing_tools(target)
+    if missing:
+        raise HTTPException(400, f'a {src_platform or "vmware"} image restored onto {target} is converted first, and this server lacks '
+                                 f'{", ".join(missing)}: {convert.TOOL_PACKAGES}')
+
+
 @r.post('/restore-points/{rp_id}/restore')
 def restore(rp_id: int, body: RestoreIn, user=Depends(require('restore'))):
+    if body.connection_id:
+        with db.conn() as c:
+            rp = c.execute('SELECT platform FROM restore_points WHERE id=? AND deleted=0', (rp_id,)).fetchone()
+            cr = c.execute('SELECT type FROM connections WHERE id=?', (body.connection_id,)).fetchone()
+        if rp and cr:
+            _conversion_guard(rp[0], cr[0])
     db.audit(user['username'], 'restore', f'{rp_id} -> {body.name}')
     return {'task_id': tasks.create('restore', subject=body.name or f'rp {rp_id}', created_by=user['username'],
                                     restore_point_id=rp_id, options=body.model_dump())}
@@ -493,6 +512,11 @@ def convert_rp(rp_id: int, body: ConvertIn, user=Depends(require('restore'))):
         rp = c.execute('SELECT rp.id, v.name FROM restore_points rp JOIN vms v ON v.id=rp.vm_id WHERE rp.id=? AND rp.deleted=0', (rp_id,)).fetchone()
     if not rp:
         raise HTTPException(404)
+    from ..core import convert
+    try:
+        convert.check_tools(body.target)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
     db.audit(user['username'], 'convert', f'{rp_id} -> {body.target}')
     return {'task_id': tasks.create('convert', subject=f'{rp["name"]} -> {body.target}', created_by=user['username'],
                                     restore_point_id=rp_id, target=body.target, options=body.model_dump())}
@@ -547,8 +571,12 @@ def add_replication(body: ReplicationIn, user=Depends(require('operator'))):
     if not body.schedule and not body.after_backup:
         raise HTTPException(400, 'give the replication a schedule, let it follow backups, or both')
     with db.conn() as c:
-        if not c.execute('SELECT 1 FROM connections WHERE id=?', (body.target_connection_id,)).fetchone():
+        target = c.execute('SELECT type FROM connections WHERE id=?', (body.target_connection_id,)).fetchone()
+        source = c.execute('SELECT type FROM connections WHERE id=?', (body.connection_id,)).fetchone()
+        if not target:
             raise HTTPException(404, 'target connection not found')
+        if source:
+            _conversion_guard('proxmox' if source[0] == 'proxmox' else 'vmware', target[0])
         try:
             c.execute('INSERT INTO replications(name,connection_id,target_connection_id,vm_ids_json,schedule,after_backup,options_json,enabled,created,next_run) VALUES(?,?,?,?,?,?,?,?,?,?)',
                       (body.name, body.connection_id, body.target_connection_id, json.dumps(body.vm_ids), body.schedule or None, int(body.after_backup),
@@ -815,8 +843,10 @@ def status(user=Depends(current_user)):
             'failed_runs_24h': f"SELECT COUNT(*) FROM runs WHERE status='failed' AND started>{time.time() - 86400}",
         }.items()}
         last_gc = c.execute("SELECT value FROM meta WHERE key='last_gc'").fetchone()
+    from ..core import convert
     return {'version': APP_VERSION, 'repository': {'path': rep.path, 'id': rep.id, **rep.stats()},
-            'proxies_online': len(ops.online_proxies()), 'last_gc': float(last_gc[0]) if last_gc else None, **counts}
+            'proxies_online': len(ops.online_proxies()), 'last_gc': float(last_gc[0]) if last_gc else None,
+            'conversion': convert.availability(), **counts}
 
 
 @r.post('/maintenance/gc')

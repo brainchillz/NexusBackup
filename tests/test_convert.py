@@ -108,3 +108,14 @@ def test_fixup_commands():
     c = convert.fixup_command('vmware', ['/w/d0.qcow2'], {'distro': 'ubuntu', 'package_management': 'apt'}, [], True)
     assert any('update-initramfs' in x for x in c) and c[c.index('--firstboot-install') + 1] == 'open-vm-tools'
     assert convert.guest_is_windows({'guest_id': 'windows2019srv_64Guest'}) and convert.guest_is_windows({'guest_id': 'win11'}) and not convert.guest_is_windows({'guest_id': 'l26'})
+
+
+def test_tool_availability(monkeypatch):
+    monkeypatch.setattr(convert.shutil, 'which', lambda t: None if t == 'virt-v2v-in-place' else '/usr/bin/' + t)
+    assert convert.missing_tools('proxmox') == ['virt-v2v-in-place'] and convert.missing_tools('vmware') == []
+    a = convert.availability()
+    assert a['available'] is False and a['missing'] == ['virt-v2v-in-place'] and a['how'] and isinstance(a['kvm'], bool)
+    with pytest.raises(RuntimeError, match='virt-v2v-in-place'):
+        convert.check_tools('proxmox')
+    monkeypatch.setattr(convert.shutil, 'which', lambda t: '/usr/bin/' + t)
+    assert convert.availability()['available'] is True and convert.availability()['how'] is None

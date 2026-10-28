@@ -229,6 +229,8 @@ function startedTask(res, what) {
    from the chosen target and defaulted to the source's names where they exist there. */
 async function restoreDialog(rp, vmName, connectionId) {
   const conns = await api('GET', '/api/v1/connections');
+  let conversion = { available: true };
+  try { conversion = (await api('GET', '/api/v1/status')).conversion || conversion; } catch (e) { /* older server */ }
   let detail = {};
   try { detail = await api('GET', `/api/v1/restore-points/${rp.id}`); } catch (e) { /* older point */ }
   const spec = detail.spec || {};
@@ -251,7 +253,8 @@ async function restoreDialog(rp, vmName, connectionId) {
       <div class="row"><label class="f"><span>VM folder</span><select name="folder"><option value="">(root VM folder)</option></select></label><div id="netmap" class="row" style="flex:2"></div></div>
       <p class="muted" id="drnote" style="display:none"></p>
       <div id="convnote" style="display:none"><p class="muted"><b>Conversion.</b> This restore point is a <span id="convfrom"></span> image and the target is <span id="convto"></span>. The server first makes a <span id="convto2"></span> restore point of it (Linux guests: drivers in the initramfs, interface names pinned, a few MiB of new blocks), keeps it for later restores, then restores that. The copy boots with the target's own disk and network devices.</p>
-      <label class="c"><input type="checkbox" name="install_tools"> Install the target's guest tools (QEMU guest agent or open-vm-tools) on the copy's first boot; needs package repositories reachable from the copy</label></div>
+      <label class="c"><input type="checkbox" name="install_tools"> Install the target's guest tools (QEMU guest agent or open-vm-tools) on the copy's first boot; needs package repositories reachable from the copy</label>
+      <p class="err" id="convwarn" style="display:none"></p></div>
       <label class="c"><input type="checkbox" name="new_identity" checked> New identity (fresh MAC addresses and BIOS UUID). Untick only when the original VM is gone.</label>
       <label class="c"><input type="checkbox" name="power_on"> Power on after restore</label>
       <p class="muted">A restored copy keeps the guest's host name, host keys and DHCP client identity. Do not run it next to the original on the same network.</p>`,
@@ -307,6 +310,11 @@ async function restoreDialog(rp, vmName, connectionId) {
     const tplat = platformOf(tconn);
     const conv = m.querySelector('#convnote');
     conv.style.display = tplat === srcPlatform ? 'none' : '';
+    const warn = m.querySelector('#convwarn');
+    const cannot = tplat !== srcPlatform && !conversion.available;
+    warn.style.display = cannot ? '' : 'none';
+    warn.textContent = cannot ? `Conversion is not available on this server: it lacks ${(conversion.missing || []).join(', ')}. ${conversion.how || ''} Restore to a ${srcPlatform === 'proxmox' ? 'Proxmox' : 'VMware'} connection instead.` : '';
+    m.querySelector('footer .primary').disabled = cannot;
     m.querySelector('#convfrom').textContent = srcPlatform === 'proxmox' ? 'Proxmox' : 'VMware';
     m.querySelector('#convto').textContent = tplat === 'proxmox' ? 'Proxmox' : 'VMware';
     m.querySelector('#convto2').textContent = tplat === 'proxmox' ? 'Proxmox' : 'VMware';
@@ -376,6 +384,8 @@ async function jobDialog(job, preset) {
    (host, datastore, folder, one network picker per source network), trigger and naming. */
 async function replicationDialog(rep) {
   const [conns, vms] = await Promise.all([api('GET', '/api/v1/connections'), api('GET', '/api/v1/vms')]);
+  let conversion = { available: true };
+  try { conversion = (await api('GET', '/api/v1/status')).conversion || conversion; } catch (e) { /* older server */ }
   const o = (rep && rep.options) || {};
   const j = rep || { name: '', connection_id: conns[0] && conns[0].id, target_connection_id: (conns[1] || conns[0] || {}).id, vm_ids: [],
     schedule: '', after_backup: true, enabled: true, options: {} };
@@ -393,6 +403,7 @@ async function replicationDialog(rep) {
     </div>
     <div id="netmap" class="row"></div>
     <p class="muted" id="convnote" style="display:none">The platforms differ: each sync converts the newest restore point first (Linux guests). The copy keeps the identity of its first conversion.</p>
+    <p class="err" id="convwarn" style="display:none"></p>
     <div class="row">
       <label class="f"><span>Replica name suffix</span><input name="suffix" value="${esc(o.suffix === undefined ? '-replica' : o.suffix)}"></label>
       <label class="f"><span>Schedule (cron, server local time; optional)</span><input name="schedule" value="${esc(j.schedule || '')}" list="cronr"><datalist id="cronr">${presets.map(p => `<option value="${p[0]}">${p[1]}</option>`).join('')}</datalist></label>
@@ -450,7 +461,12 @@ async function replicationDialog(rep) {
   async function loadPlacement() {
     const tid = Number(val(m, 'target_connection_id'));
     const tconn = conns.find(c => c.id === tid), sconn = conns.find(c => c.id === Number(val(m, 'connection_id')));
-    m.querySelector('#convnote').style.display = platformOf(tconn) === platformOf(sconn) ? 'none' : '';
+    const cross = platformOf(tconn) !== platformOf(sconn);
+    m.querySelector('#convnote').style.display = cross ? '' : 'none';
+    const warn = m.querySelector('#convwarn');
+    warn.style.display = cross && !conversion.available ? '' : 'none';
+    warn.textContent = cross && !conversion.available ? `Conversion is not available on this server: it lacks ${(conversion.missing || []).join(', ')}. ${conversion.how || ''} Pick a target of the same platform.` : '';
+    m.querySelector('footer .primary').disabled = cross && !conversion.available;
     sel('host').innerHTML = '<option value="">loading…</option>';
     try { placement = await api('GET', `/api/v1/connections/${tid}/placement`); } catch (e) { placement = null; m.querySelector('.err').textContent = 'Cannot read the target: ' + e.message; }
     const hosts = (placement && placement.hosts) || [];

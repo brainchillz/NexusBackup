@@ -1,0 +1,9 @@
+# Add-on for compose.yml: give the container /dev/kvm so cross-platform conversion runs the
+# libguestfs appliance with hardware virtualization (several times faster than emulation).
+# Use it when the host has /dev/kvm:
+#   docker compose -f compose.yml -f compose.kvm.yml up -d
+# or put COMPOSE_FILE=compose.yml:compose.kvm.yml in .env (get.sh --docker does that by itself).
+services:
+  hvbackup:
+    devices:
+      - /dev/kvm:/dev/kvm

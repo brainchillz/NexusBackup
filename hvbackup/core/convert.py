@@ -43,14 +43,31 @@ def guest_env():
     env = dict(os.environ)
     env.setdefault('LIBGUESTFS_BACKEND', 'direct')
     env.setdefault('LIBGUESTFS_CACHEDIR', '/var/tmp')
+    try:  # the appliance cache (in Docker: on the data volume, so it is built once)
+        os.makedirs(env['LIBGUESTFS_CACHEDIR'], exist_ok=True)
+    except OSError:
+        pass
     env.setdefault('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')
     return env
 
 
+def missing_tools(target):
+    return [t for t in TOOLS[target] if not shutil.which(t)]
+
+
 def check_tools(target):
-    missing = [t for t in TOOLS[target] if not shutil.which(t)]
+    missing = missing_tools(target)
     if missing:
         raise RuntimeError(f'conversion needs {", ".join(missing)} on the backup server: {TOOL_PACKAGES}')
+
+
+def availability():
+    """Reported by GET /status so the UI can say up front whether a cross-platform restore or
+    replication can run here (a native install without libguestfs cannot; the container image
+    carries the tools). kvm: whether /dev/kvm is usable, which makes the fix-ups several times faster."""
+    missing = sorted({t for target in TARGETS for t in missing_tools(target)})
+    return {'available': not missing, 'missing': missing, 'kvm': os.access('/dev/kvm', os.R_OK | os.W_OK),
+            'how': None if not missing else TOOL_PACKAGES}
 
 
 def guest_is_windows(spec):

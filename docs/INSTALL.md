@@ -14,7 +14,9 @@ backup done, for the two supported ways of running it:
 
 A third option, a Debian package built from the source, is covered at the end.
 Whichever you choose, the result is the same server listening on
-`https://<host>:8460`, the same UI, CLI and API.
+`https://<host>:8460`, the same UI, CLI and API. If an AI assistant is doing
+the install for you, give it [Agent_Install.md](../Agent_Install.md), which
+condenses this guide into checks and commands.
 
 ![The dashboard after the first nightly runs](images/dashboard.png)
 
@@ -86,9 +88,11 @@ Administrator role while evaluating.
 
 **Conversion between VMware and Proxmox** (Linux guests) runs libguestfs on
 the server: `virt-v2v` and `libguestfs-tools`, which the installer adds on
-Debian and Ubuntu. It needs a kernel the service user can read and, for
-speed, `/dev/kvm` (the installer handles both). Not available in the Docker
-image yet.
+Debian and Ubuntu and which the container image carries. It needs a kernel
+the service user can read and, for speed, `/dev/kvm` (the installer handles
+both; in Docker, `compose.kvm.yml` maps the device in). Without `/dev/kvm`
+conversions still work, several times slower. **Settings** shows whether
+conversion is available on a server.
 
 **Operating system.** Tested on Ubuntu 24.04 and 26.04 and Debian 13. The
 native install needs Python 3.12 or newer and systemd. On RHEL 9 the default
@@ -268,9 +272,11 @@ Then sign in at `https://backup.example.net:8460` and continue with
 ### 5.1 Prerequisites
 
 Docker Engine with the Compose plug-in (`docker compose version` works). The
-image is built locally from the checkout, no registry needed. The container
-needs to reach vCenter, ESXi and Proxmox on their ports, and port 8460 must be
-published.
+image comes from the registry, or is built locally from the checkout. The
+container needs to reach vCenter, ESXi and Proxmox on their ports, and port
+8460 must be published. For conversion between VMware and Proxmox at full
+speed the host needs `/dev/kvm` (a physical host, or a VM with nested
+virtualization); without it conversion still works, slower.
 
 ### 5.2 Get the code and configure
 
@@ -285,6 +291,7 @@ Edit `.env`:
 ```
 HVB_URL=https://backup.example.net:8460    # the public URL (certificate name, what proxies call back to)
 HVB_REPO_HOST=/srv/hvbackup                # host directory for the repository
+COMPOSE_FILE=compose.yml:compose.kvm.yml   # only on a host with /dev/kvm: conversion with hardware virtualization
 ```
 
 `compose.yml` publishes port 8460, mounts `HVB_REPO_HOST` at
@@ -311,7 +318,7 @@ sudo ./packaging/get.sh --docker --repo /srv/hvbackup --url https://backup.examp
 
 | Task | Command |
 |---|---|
-| CLI | `docker compose exec hvbackup hvbackup status` (any CLI command, inside the container it needs no token) |
+| CLI | `docker compose exec -e HVB_TOKEN=hvb_... hvbackup hvbackup status` (any CLI command; like every client it needs a token from **Settings → API tokens**, only `init-admin` works without one) |
 | Logs | `docker compose logs -f` |
 | Restart | `docker compose restart` |
 | Upgrade | `git pull && docker compose pull && docker compose up -d` (or `--build`) |
@@ -345,6 +352,7 @@ services:
 - `/var/lib/hvbackup` is the named volume; the proxy image cache (560 MiB) lives there too.
 - There is no systemd unit; `restart: unless-stopped` brings the container back after a reboot.
 - `qemu-img` is in the image, so OVA export works.
+- The conversion tool chain (`virt-v2v`, libguestfs, a kernel for its appliance) is in the image, about 1.5 GB in all. The appliance is built on the data volume at the first conversion, once, in a few seconds. With `compose.kvm.yml` the container gets `/dev/kvm`; without it libguestfs runs under software emulation, which works but takes several times longer per conversion.
 - The Proxmox node plug-in and proxy agent are served by the container like the native server; nothing changes on the hypervisor side.
 
 ## 6. Debian package
@@ -541,6 +549,8 @@ automatically on start.
 | Service runs but the repository is read-only | The directory is not owned by `hvbackup`, or it sits under `/etc` or `/usr`, which the unit mounts read-only |
 | Browser warns about the certificate | Expected with the generated certificate; install your own ([4.6](#46-certificate)) |
 | Proxy deployment fails with `the agent has not reported in` | The VM could not reach apt, PyPI or `HVB_URL`; read `/var/log/hvbackup-bootstrap.log` on its console |
+| **Settings** says conversion is unavailable | Native: `apt install virt-v2v libguestfs-tools` and rerun `packaging/install.sh`. Docker: the container runs an image older than 0.3.0, `docker compose pull && docker compose up -d` |
+| Conversion works but is slow in Docker | No `/dev/kvm` in the container: add `compose.kvm.yml` (`COMPOSE_FILE` in `.env`), which needs `/dev/kvm` on the host |
 
 For everything after the install, see the troubleshooting table in the
 [README](../README.md#troubleshooting).

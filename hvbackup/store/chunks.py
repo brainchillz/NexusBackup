@@ -203,17 +203,25 @@ class Repository:
         log(f'removed {removed} chunks, freed {freed / 2**30:.2f} GiB, kept {kept}')
         return {'removed': removed, 'freed_bytes': freed, 'kept': kept, 'live': len(live)}
 
+    STATS_TTL = 60
+
     def stats(self):
-        n = size = 0
-        for a in os.listdir(self.chunks):
-            for b in os.listdir(os.path.join(self.chunks, a)):
-                d = os.path.join(self.chunks, a, b)
-                with os.scandir(d) as it:
-                    for e in it:
-                        n += 1
-                        size += e.stat().st_size
+        """Chunk count and stored bytes (a walk of every chunk file, cached for a minute: every
+        /status call and the sidebar poll ask for it), free space live."""
+        now = time.time()
+        cached = getattr(self, '_stats', None)
+        if not cached or now - cached[0] > self.STATS_TTL:
+            n = size = 0
+            for a in os.listdir(self.chunks):
+                for b in os.listdir(os.path.join(self.chunks, a)):
+                    d = os.path.join(self.chunks, a, b)
+                    with os.scandir(d) as it:
+                        for e in it:
+                            n += 1
+                            size += e.stat().st_size
+            cached = self._stats = (now, n, size)
         st = os.statvfs(self.path)
-        return {'chunks': n, 'stored_bytes': size, 'free_bytes': st.f_bavail * st.f_frsize,
+        return {'chunks': cached[1], 'stored_bytes': cached[2], 'free_bytes': st.f_bavail * st.f_frsize,
                 'total_bytes': st.f_blocks * st.f_frsize}
 
     @staticmethod

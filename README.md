@@ -91,18 +91,25 @@ sudo apt install ./dist/hvbackup_*.deb
 ```
 
 The package installs the same files and starts the service. Then set
-`HVB_REPO` and `HVB_URL` in `/etc/hvbackup/hvbackup.conf`, restart, and run
-`sudo -u hvbackup HVB_CONFIG=/etc/hvbackup/hvbackup.conf /opt/hvbackup/venv/bin/hvbackup init-admin admin`.
+`HVB_REPO` in `/etc/hvbackup/hvbackup.conf`, restart, open the web UI and
+create the first administrator on the sign-in page (or run
+`sudo -u hvbackup HVB_CONFIG=/etc/hvbackup/hvbackup.conf /opt/hvbackup/venv/bin/hvbackup init-admin admin`).
+The public URL and the other runtime settings are under **Settings → Server**.
 Installed on a proxy VM where `/etc/hvbackup/agent.conf` already exists,
 the same package enables `hvbackup-agent` instead of the server.
 
 ### C. Docker Compose
 
 ```bash
-cp .env.example .env     # set HVB_URL and HVB_REPO_HOST
+cp .env.example .env     # set HVB_REPO_HOST (and HVB_URL, or set the public URL in Settings later)
 docker compose up -d     # pulls ghcr.io/brainchillz/nexusbackup; add --build to build locally
-docker compose exec hvbackup hvbackup init-admin admin
 ```
+
+Then open `https://<host>:8460`: the sign-in page asks for the first
+administrator while the server has no account. Everything else (public URL,
+time zone, log level, proxy image, catalog copies) is under **Settings**, so
+the container needs no shell. `docker compose exec hvbackup hvbackup init-admin admin`
+still works for scripts.
 
 `HVB_REPO_HOST` is the host directory backups land in, mounted at
 `/var/lib/hvbackup/repo`. The catalog, secret key and certificate live in the
@@ -154,10 +161,24 @@ override it; `HVB_CONFIG` points elsewhere).
 | `HVB_REPO` | `<data>/repo` | The backup repository: `chunks/`, `manifests/`, `staging/`, `repo.json`. Large. |
 | `HVB_BIND` | `0.0.0.0` | Listen address. |
 | `HVB_PORT` | `8460` | Listen port (HTTPS). |
-| `HVB_URL` | empty | Public base URL shown to proxies and in the UI, e.g. `https://backup.example.net:8460`. |
 | `HVB_TLS_CERT` / `HVB_TLS_KEY` | empty | PEM certificate and key. Unset: a self-signed pair is generated in `<data>/certs/` on first start. |
-| `HVB_LOG_LEVEL` | `info` | `debug`, `info`, `warning`. |
-| `HVB_CONCURRENCY` | `2` | Backups, restores and replication syncs running at once per connection; the rest wait in their task. |
+
+**Runtime settings** live in the catalog and are edited under **Settings**
+(admin). Each has an environment variable or config-file key that serves as
+the bootstrap default; when it is set, the field is locked in the UI and says
+so. `GET/PATCH /api/v1/settings` is the API.
+
+| Setting | Key | Default | Meaning |
+|---|---|---|---|
+| Public URL | `HVB_URL` | empty | What browsers, proxies, Proxmox nodes and vCenter reach the server at, e.g. `https://backup.example.net:8460`. Proxies and node registrations pin it. |
+| Time zone | `TZ` | the host's | Cron schedules and the nightly maintenance hour run in this zone. |
+| Session lifetime | `HVB_SESSION_HOURS` | `12` | Hours a web sign-in lasts. |
+| Log level | `HVB_LOG_LEVEL` | `info` | `debug`, `info`, `warning`; applied at once. **Settings → Server log** shows the last 4000 lines. |
+| Check for updates | `HVB_UPDATE_CHECK` | on | Daily release check against GitHub; a notice appears in the sidebar when the server is behind. |
+| Listen address, port | `HVB_BIND`, `HVB_PORT` | `0.0.0.0`, `8460` | Need a restart (button in Settings). |
+| Concurrency | `HVB_CONCURRENCY` | `2` | Backups, restores and replication syncs running at once per connection; the rest wait in their task. |
+| Catalog copy | `HVB_CATALOG_BACKUP`, `HVB_CATALOG_BACKUP_KEEP` | on, `7` | A daily archive of the catalog, `secret.key` and the certificate into `<repository>/catalog/`. |
+| Proxy image | `HVB_PROXY_IMAGE_URL`, `HVB_PROXY_IMAGE_SHA256`, `HVB_PROXY_IMAGE` | Ubuntu 24.04 | The cloud OVA proxies are built from, or a local file (upload one in Settings for offline sites). |
 
 Agent: `/etc/hvbackup/agent.conf` on each proxy VM.
 
@@ -229,8 +250,10 @@ before the subcommand for raw output.
 | `proxies list\|add\|deploy\|image\|delete` | Proxy VMs; `deploy` builds one from the cloud image, `add` prints the token and agent.conf for one you install yourself, `image` shows the cached image | `hvbackup proxies deploy proxy-cluster1 --connection prod --network "VM Network" --wait` |
 | `users list\|add\|passwd\|delete` | Local accounts; `--role` | `hvbackup users add alice --role operator` |
 | `tokens list\|add\|delete` | API tokens | `hvbackup tokens add ci` |
+| `settings list\|set KEY VALUE` | Runtime settings; `-` as the value clears to the default | `hvbackup settings set timezone Europe/Amsterdam` |
+| `logs`, `restart` | The in-memory server log; restart once no task runs | `hvbackup logs --level warning -n 50` |
 | `gc` | Garbage-collect unreferenced chunks now | `hvbackup gc` |
-| `server`, `init-admin <user>`, `agent` | Server-side: run the server, create or reset an admin, run the proxy agent | `hvbackup init-admin admin` |
+| `server`, `init-admin <user>`, `agent` | Server-side: run the server, create or reset an admin (the sign-in page offers the first one), run the proxy agent | `hvbackup init-admin admin` |
 
 ### Jobs, schedules, retention
 

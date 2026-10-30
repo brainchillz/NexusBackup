@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import APP_VERSION, config, db
-from ..core import ops, scheduler, tasks
+from ..core import ops, scheduler, settings, tasks
 from ..store.chunks import repo
 from . import agent_routes, pve_routes, routes, vsphere_plugin_routes
 
@@ -23,8 +23,9 @@ log = logging.getLogger('hvbackup')
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    settings.apply()
     rep = repo()
-    log.info('hvbackup %s: data %s, repository %s (%s)', APP_VERSION, config.DATA_DIR, rep.path, rep.id)
+    log.info('hvbackup %s: data %s, repository %s (%s), zone %s', APP_VERSION, config.DATA_DIR, rep.path, rep.id, settings.get('timezone'))
     ops.register_tasks()
     tasks.recover_orphans()
     scheduler.start(ops.scheduler_run_job, every_tick=ops.maybe_gc, run_replication=ops.scheduler_run_replication)

@@ -3,6 +3,36 @@
 Releases of NexusBackup (command and package `hvbackup`). Dates are the day
 the release was tagged.
 
+## Unreleased
+
+**Container-first settings.** Runtime settings moved from environment
+variables into a `settings` table edited under **Settings** (admin); the
+environment variable or `hvbackup.conf` key, when set, is the bootstrap
+default and locks the field with a note saying where it comes from.
+`GET/PATCH /api/v1/settings`. Settings: public URL, time zone (cron schedules
+ran in UTC before, whatever the host's zone; the job and replication dialogs
+now name the zone), session lifetime, log level (applied at once), update
+check, listen address and port (restart), concurrency per connection
+(applied to the next operation), catalog copies, proxy image URL, checksum
+and local file.
+
+**First administrator from the sign-in page.** While the server has no
+account the sign-in page asks for one (`POST /api/v1/auth/setup`, a door that
+closes after the first account). `init-admin` stays for scripts.
+
+**Catalog backup and restore.** A daily archive of the catalog (consistent
+SQLite copy), `secret.key` and the certificate into `<repository>/catalog/`
+(keep 7, both configurable); **Download a backup now**; restore from an
+upload or a repository copy, staged and applied at the next start with the
+old catalog kept as `catalog.db.before-restore`.
+
+**Server log in the UI**, the last 4000 lines with level and text filters;
+**Restart server** button (exits once no task runs; the shipped unit is now
+`Restart=always`, Compose already restarts); **update notice** in the sidebar
+from a daily release check (off with the setting); **themes uploaded as a
+zip** and deleted from Settings; **proxy image uploaded as an OVA** for
+offline sites.
+
 ## 0.3.0 (2026-10-28)
 
 **Scheduled replication.** Standby copies of VMs on another connection, of the

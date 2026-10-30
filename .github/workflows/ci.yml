@@ -22,7 +22,7 @@ jobs:
       - name: Install
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q qemu-utils
-          python -m pip install -q -e . pytest
+          python -m pip install -q -e . pytest httpx
       - name: Test
         run: python -m pytest -q tests
   docker:

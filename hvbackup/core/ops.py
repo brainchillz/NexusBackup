@@ -5,39 +5,53 @@ import logging
 import threading
 import time
 
-from .. import config, db
+from .. import db
 from ..providers import proxmox, vmware
 from ..store.chunks import repo
 from . import scheduler, secrets, tasks, uuids
 
 log = logging.getLogger('hvbackup.ops')
 PROXY_FRESH = 120  # seconds since last hello for a proxy to count as online
-CONCURRENCY = max(int(config.get('HVB_CONCURRENCY', '2') or 2), 1)  # backups/restores running at once per connection
 _slots = {}
 _slots_guard = threading.Lock()
+_running = {}
+
+
+def concurrency():
+    """Backups/restores/syncs running at once per connection (Settings)."""
+    from . import settings
+    return max(int(settings.get('concurrency')), 1)
+
 
 
 class connection_slot:
-    """At most CONCURRENCY long operations (backup, restore, replication) run against one
+    """At most `concurrency()` long operations (backup, restore, replication) run against one
     connection at a time, so a scheduler firing many jobs on many vCenters does not start a
-    snapshot storm; the rest wait here, cancellable."""
+    snapshot storm; the rest wait here, cancellable. The limit is read at every acquire, so a
+    change in Settings applies to the next operation."""
 
     def __init__(self, task, conn_id, what='work'):
         self.task, self.conn_id, self.what = task, conn_id, what
         with _slots_guard:
-            self.sem = _slots.setdefault(conn_id, threading.BoundedSemaphore(CONCURRENCY))
+            self.cv = _slots.setdefault(conn_id, threading.Condition())
+            _running.setdefault(conn_id, 0)
 
     def __enter__(self):
         waited = False
-        while not self.sem.acquire(timeout=5):
-            if not waited:
-                self.task.log(f'waiting for a free slot on this connection ({CONCURRENCY} {self.what} operations already running there)')
-                waited = True
-            self.task.check_cancel()
+        with self.cv:
+            while _running[self.conn_id] >= concurrency():
+                if not waited:
+                    self.task.log(f'waiting for a free slot on this connection ({concurrency()} {self.what} operations already running there)')
+                    waited = True
+                self.cv.wait(timeout=5)
+                self.task.check_cancel()
+            _running[self.conn_id] += 1
         return self
 
     def __exit__(self, *a):
-        self.sem.release()
+        with self.cv:
+            _running[self.conn_id] -= 1
+            self.cv.notify_all()
 
 
 def connection(conn_id):
@@ -59,8 +73,8 @@ def open_api(conn_row):
 def pve_setup(conn_row):
     """What an admin needs to connect a Proxmox cluster: the one-line node installer and the
     storage registration state."""
-    from .. import config
-    base = (config.PUBLIC_URL or '').rstrip('/')
+    from . import settings
+    base = settings.public_url()
     with open_api(conn_row) as api:
         about = api.about()
     return {'install': f'curl -ksS {base}/api/v1/pve/install.sh | bash' if base else None,
@@ -71,13 +85,12 @@ def pve_setup(conn_row):
 def pve_register_storage(conn_row, storage_id='hvbackup'):
     """Register (or re-key) the hvbackup storage on the cluster. The storage entry carries a
     proxy token tied to this connection; every node's plug-in uses it."""
-    from .. import config
-    from . import auth, tls
+    from . import auth, settings, tls
     import hashlib
     import urllib.parse
-    if not config.PUBLIC_URL:
-        raise RuntimeError('HVB_URL must be set to the public https URL of this server first')
-    u = urllib.parse.urlparse(config.PUBLIC_URL)
+    if not settings.public_url():
+        raise RuntimeError('set the public URL of this server first (Settings > Server, or HVB_URL)')
+    u = urllib.parse.urlparse(settings.public_url())
     name = f'pve-{conn_row["name"]}'
     with db.conn() as c:
         old = c.execute('SELECT id FROM proxies WHERE name=?', (name,)).fetchone()
@@ -108,14 +121,14 @@ def test_connection(conn_row):
 
 def vsphere_plugin(conn_row, action):
     from ..providers import vsphere_plugin as vsp
-    from .. import config
-    if action in ('register', 'update') and not config.PUBLIC_URL:
-        raise RuntimeError('HVB_URL must be set to the public https URL of this server before registering the plug-in')
+    from . import settings
+    if action in ('register', 'update') and not settings.public_url():
+        raise RuntimeError('set the public URL of this server first (Settings > Server, or HVB_URL) before registering the plug-in')
     with open_api(conn_row) as api:
         if not api.about()['is_vcenter']:
             raise RuntimeError('the vSphere Client plug-in registers with vCenter, not a standalone ESXi host')
         if action in ('register', 'update'):
-            return vsp.register(api, config.PUBLIC_URL)
+            return vsp.register(api, settings.public_url())
         if action == 'unregister':
             return vsp.unregister(api)
         return vsp.status(api)
@@ -428,7 +441,14 @@ def gc(task, grace_seconds=3600):
 
 
 def maybe_gc():
-    """Called by the scheduler loop: run GC once a day at ~03:00 local time."""
+    """Called by the scheduler loop: run GC once a day at ~03:00 in the configured zone, and
+    the other daily chores (catalog copy, update check) alongside."""
+    from . import catalog_backup, updates
+    try:
+        catalog_backup.maybe_copy()
+        updates.check()
+    except Exception:  # noqa: BLE001
+        log.exception('daily chores failed')
     with db.conn() as c:
         r = c.execute("SELECT value FROM meta WHERE key='last_gc'").fetchone()
         running = c.execute("SELECT COUNT(*) FROM tasks WHERE kind='gc' AND state IN ('queued','running')").fetchone()[0]

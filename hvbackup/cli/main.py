@@ -22,6 +22,9 @@ Client side (any machine; HVB_URL + HVB_TOKEN, or ~/.config/hvbackup/client.conf
   hvbackup tasks list|show|wait|cancel
   hvbackup proxies list|add <name>|deploy <name> --connection <id|name> [...]|image
   hvbackup users list|add|passwd ; hvbackup tokens list|add|delete
+  hvbackup settings list|set KEY VALUE   runtime settings (public URL, time zone, log level, ...); `set KEY -` clears to the default
+  hvbackup logs [--level L] [--grep X] [-n N]   the server log kept in memory
+  hvbackup restart                      exit once no task runs; the service manager starts the server again
   hvbackup gc
 Every command accepts --json for raw API output.
 """
@@ -149,13 +152,16 @@ def cmd_server(args):
 
     import uvicorn
 
-    from .. import config
     from ..api.app import create_app
-    from ..core import tls
-    logging.basicConfig(level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO), format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+    from ..core import catalog_backup, logs, settings, tls
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+    logs.install()
+    if catalog_backup.apply_pending():
+        logging.getLogger('hvbackup').warning('catalog restored from the staged archive; the previous catalog is catalog.db.before-restore')
+    settings.apply()  # log level and zone from the catalog (or the environment)
     crt, key = tls.ensure_cert()
-    uvicorn.run(create_app(), host=config.BIND, port=config.PORT, ssl_certfile=crt, ssl_keyfile=key, log_level=config.LOG_LEVEL,
-                proxy_headers=True, forwarded_allow_ips='*')
+    uvicorn.run(create_app(), host=settings.get('bind'), port=settings.get('port'), ssl_certfile=crt, ssl_keyfile=key,
+                log_level=settings.get('log_level'), proxy_headers=True, forwarded_allow_ips='*', log_config=None)
 
 
 def cmd_init_admin(args):
@@ -445,6 +451,37 @@ def cmd_users(args):
         out(args, c.call('DELETE', f'/users/{args.username}'))
 
 
+def cmd_settings(args):
+    c = Client()
+    if args.action == 'list':
+        rows = c.call('GET', '/settings')['settings']
+        out(args, rows, [{**s, 'value': json.dumps(s['value']), 'source': s['source'] + (' (locked)' if s['locked'] else '')} for s in rows], ['key', 'value', 'source', 'label'])
+    elif args.action == 'set':
+        if not args.key or args.value is None:
+            sys.exit('usage: hvbackup settings set KEY VALUE   (VALUE "-" clears to the default)')
+        res = c.call('PATCH', '/settings', json={args.key: None if args.value == '-' else args.value})
+        row = next(s for s in res['settings'] if s['key'] == args.key)
+        out(args, row)
+        if res['restart_needed']:
+            print('restart the server to apply:', ', '.join(res['restart_needed']), file=sys.stderr)
+
+
+def cmd_logs(args):
+    c = Client()
+    q = {'limit': args.n, 'level': args.level}
+    if args.grep:
+        q['q'] = args.grep
+    rows = c.call('GET', '/logs', params=q)
+    if args.json:
+        out(args, rows)
+    for l in rows:
+        print(f"{fmt_ts(l['ts'])} {l['level'].upper():7} {l['logger']}: {l['message']}")
+
+
+def cmd_restart(args):
+    out(args, Client().call('POST', '/server/restart', params={'reason': args.reason or 'cli'}))
+
+
 def cmd_tokens(args):
     c = Client()
     if args.action == 'list':
@@ -542,6 +579,9 @@ def main(argv=None):
     p.add_argument('--cpus', type=int, default=2); p.add_argument('--memory', type=int, default=2048, help='MiB'); p.add_argument('--ssh-key-file', help='public key for the ubuntu user')
     p.add_argument('--url', help='URL the proxy calls the server on (default: HVB_URL of the server, else this client\'s URL)'); p.add_argument('--timeout', type=int, default=20, help='minutes to wait for the agent')
     p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_proxies)
+    p = sub.add_parser('settings'); p.add_argument('action', choices=['list', 'set']); p.add_argument('key', nargs='?'); p.add_argument('value', nargs='?'); p.set_defaults(fn=cmd_settings)
+    p = sub.add_parser('logs'); p.add_argument('-n', type=int, default=100); p.add_argument('--level', default='info'); p.add_argument('--grep'); p.set_defaults(fn=cmd_logs)
+    p = sub.add_parser('restart'); p.add_argument('--reason'); p.set_defaults(fn=cmd_restart)
     p = sub.add_parser('users'); p.add_argument('action', choices=['list', 'add', 'passwd', 'delete']); p.add_argument('username', nargs='?'); p.add_argument('--password'); p.add_argument('--role', default='viewer'); p.set_defaults(fn=cmd_users)
     p = sub.add_parser('tokens'); p.add_argument('action', choices=['list', 'add', 'delete']); p.add_argument('name', nargs='?'); p.add_argument('--username'); p.add_argument('--id', type=int); p.set_defaults(fn=cmd_tokens)
     sub.add_parser('gc', help='run garbage collection now').set_defaults(fn=cmd_gc)

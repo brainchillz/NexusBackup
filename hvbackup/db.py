@@ -12,6 +12,7 @@ from . import config
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT,
   role TEXT NOT NULL DEFAULT 'viewer', created REAL NOT NULL, disabled INTEGER NOT NULL DEFAULT 0);

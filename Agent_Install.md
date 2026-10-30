@@ -128,6 +128,13 @@ is the directory from section 2, `repository.free_bytes` matches the volume,
 and `conversion.available` is `true` if conversion was wanted (`conversion.kvm`
 says whether `/dev/kvm` is usable).
 
+If no admin was created by the installer, the sign-in page offers to create
+the first one (POST `/api/v1/auth/setup` with `username` and `password`, open
+only while the server has no account). Set the public URL and the time zone in
+**Settings → Server** (or `PATCH /api/v1/settings` with `public_url` and
+`timezone`) before deploying proxies or registering nodes; schedules run in
+that zone.
+
 The CLI is a client of the API and needs a token, on the server and in the
 container alike (only `init-admin` works without one). Create it in the web
 UI under **Settings → API tokens**, or with the session cookie from above,
@@ -246,6 +253,7 @@ to every chunk).
 - **Never delete the repository or `/var/lib/hvbackup`**, and never run `docker compose down -v`, unless the person asked for exactly that.
 - **Never pipe `get.sh` from the network with `sudo` on a host you were not told to install on**, and read any script before running it.
 - **Keep secrets out of command lines and files you create.** Use environment variables or prompts; tokens go only into `client.conf` files with mode 600.
-- **Do not change** `HVB_URL` after proxies or nodes exist without redeploying the proxies and re-registering the Proxmox storage: they pin the server's certificate.
+- **Do not change** the public URL (`HVB_URL` or Settings → Server) after proxies or nodes exist without redeploying the proxies and re-registering the Proxmox storage: they pin the server's certificate.
+- **Catalog restores** staged in Settings → Catalog replace the catalog at the next start; do not stage one unless asked, and never restart with one staged that the person has not seen.
 - **Version**: `hvbackup --version` on the server, and `CHANGELOG.md` for what changed between releases.
 - When a check fails, read the log (`journalctl -u hvbackup -n 50` or `docker compose logs --tail 50`) and the troubleshooting tables in [docs/INSTALL.md](docs/INSTALL.md#13-troubleshooting-the-install) and [README.md](README.md#troubleshooting) before changing anything else.

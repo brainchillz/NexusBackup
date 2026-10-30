@@ -18,8 +18,18 @@ from .. import db
 from . import secrets as sec
 
 ROLES = ['viewer', 'restore', 'operator', 'admin']
-SESSION_TTL = 12 * 3600
 PLUGIN_TOKEN_TTL = 3600
+
+
+def session_ttl():
+    """Seconds a web session lasts (Settings > Server)."""
+    from . import settings
+    return int(settings.get('session_hours')) * 3600
+
+
+def count_users():
+    with db.conn() as c:
+        return c.execute('SELECT COUNT(*) FROM users').fetchone()[0]
 
 
 def role_at_least(have, need):
@@ -178,15 +188,19 @@ def read_plugin_token(t):
 
 
 def make_session(username):
-    return _serializer().dumps({'u': username, 't': time.time()})
+    return _serializer().dumps({'u': username, 't': time.time(), 'ttl': session_ttl()})
 
 
 def read_session(cookie):
+    """A session carries the lifetime it was issued with, so shortening the setting does not
+    throw everyone out at once; sessions from before the setting existed get 12 hours."""
     if not cookie:
         return None
     try:
-        data = _serializer().loads(cookie, max_age=SESSION_TTL)
+        data = _serializer().loads(cookie, max_age=30 * 86400)
     except BadSignature:
+        return None
+    if time.time() - float(data.get('t', 0)) > int(data.get('ttl', 12 * 3600)):
         return None
     u = get_user(data.get('u'))
     if not u or u['disabled']:

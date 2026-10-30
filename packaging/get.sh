@@ -85,10 +85,10 @@ case "$MODE" in
     docker)
         cd "$SRC"
         if [ ! -f .env ]; then
-            printf 'HVB_URL=%s\nHVB_REPO_HOST=%s\n' "${URL:-https://$(hostname -f 2>/dev/null || hostname):8460}" "${REPO:-$SRC/repo}" > .env
+            { [ -n "$URL" ] && printf 'HVB_URL=%s\n' "$URL"; printf 'HVB_REPO_HOST=%s\n' "${REPO:-$SRC/repo}"; } > .env
             echo "==> wrote $SRC/.env"
         else
-            [ -n "$URL" ] && sed -i "s|^HVB_URL=.*|HVB_URL=$URL|" .env
+            if [ -n "$URL" ]; then grep -q '^HVB_URL=' .env && sed -i "s|^HVB_URL=.*|HVB_URL=$URL|" .env || echo "HVB_URL=$URL" >> .env; fi
             [ -n "$REPO" ] && sed -i "s|^HVB_REPO_HOST=.*|HVB_REPO_HOST=$REPO|" .env
         fi
         # /dev/kvm makes VMware <-> Proxmox conversion several times faster; map it in when the host has it
@@ -109,5 +109,6 @@ case "$MODE" in
             docker compose exec -T hvbackup hvbackup init-admin "$ADMIN" --password "$PW"
             [ "$GEN" = 1 ] && echo "==> generated password for $ADMIN: $PW   (shown once; change it under Settings)"
         fi
-        echo "==> running. open $HVB_URL   (logs: docker compose -f $SRC/compose.yml logs -f)" ;;
+        echo "==> running. open ${HVB_URL:-https://$(hostname -f 2>/dev/null || hostname):8460}   (logs: docker compose -f $SRC/compose.yml logs -f)"
+        [ -n "$HVB_URL" ] || echo "    set the public URL under Settings > Server (or HVB_URL in .env) before deploying proxies" ;;
 esac

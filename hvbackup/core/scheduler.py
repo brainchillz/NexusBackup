@@ -1,6 +1,6 @@
 """Job scheduler: a thread wakes every 30 s, runs any enabled job (backup or replication)
 whose next_run has passed, and computes the following next_run from its cron expression."""
-import json
+import datetime
 import logging
 import threading
 import time
@@ -14,9 +14,13 @@ _stop = threading.Event()
 
 
 def next_run(cron, base=None):
+    """Timestamp of the next firing after `base`, with the expression read in the configured
+    zone (croniter takes a bare timestamp as UTC)."""
     if not cron:
         return None
-    return croniter(cron, base or time.time()).get_next(float)
+    from . import settings
+    start = datetime.datetime.fromtimestamp(base or time.time(), settings.zone())
+    return croniter(cron, start).get_next(float)
 
 
 def validate(cron):

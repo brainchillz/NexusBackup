@@ -29,13 +29,14 @@ def test_cloud_config_without_key_has_no_users_block_and_verifies_tls():
 
 
 def test_image_status_reports_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(proxy_deploy.config, 'PROXY_IMAGE', '')
+    from hvbackup.core import settings
     monkeypatch.setattr(proxy_deploy.config, 'IMAGE_DIR', str(tmp_path))
-    monkeypatch.setattr(proxy_deploy.config, 'PROXY_IMAGE_URL', 'https://x/y/img.ova')
+    settings.update({'proxy_image': None, 'proxy_image_url': 'https://x/y/img.ova'})
     st = proxy_deploy.image_status()
     assert st['cached'] is False and st['path'] == os.path.join(str(tmp_path), 'img.ova') and st['url'] == 'https://x/y/img.ova'
     open(st['path'], 'wb').write(b'abc')
     st = proxy_deploy.image_status()
     assert st['cached'] is True and st['size'] == 3
-    monkeypatch.setattr(proxy_deploy.config, 'PROXY_IMAGE', '/nonexistent.ova')
+    settings.update({'proxy_image': '/nonexistent.ova'})
     assert proxy_deploy.image_status()['local'] is True and proxy_deploy.image_status()['cached'] is False
+    settings.update({'proxy_image': None, 'proxy_image_url': None})

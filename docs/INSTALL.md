@@ -71,12 +71,16 @@ sudo zfs create -o compression=off -o atime=off -o mountpoint=/srv/hvbackup tank
 **Catalog and secrets.** `HVB_DATA_DIR` (default `/var/lib/hvbackup`) holds
 the SQLite catalog, the session signing key, the self-signed certificate and
 the cached proxy image. It is small (tens of MB plus the 560 MiB image) and it
-must persist: without the catalog the chunks are unreadable. Back it up.
+must persist: without the catalog the chunks are unreadable. The server
+writes a daily archive of it into `<repository>/catalog/` (on by default,
+**Settings → Catalog**), so the repository alone rebuilds a dead server;
+**Download a backup now** on the same page gives you one to keep elsewhere.
 
 **Name and certificate.** Pick the name proxies, nodes and browsers will use
 to reach the server, for example `backup.example.net`, and make sure DNS
-resolves it from the hypervisor networks. This becomes `HVB_URL`. A
-self-signed certificate is generated on first start; the agents and the
+resolves it from the hypervisor networks. This is the **public URL**, set in
+**Settings → Server** after the first sign-in (or `HVB_URL` in the
+environment, which locks the field). A self-signed certificate is generated on first start; the agents and the
 Proxmox plug-in pin it by fingerprint, so it works without a CA. The vSphere
 Client plug-in and browsers are happier with a real certificate, see
 [section 4.6](#46-certificate).
@@ -305,8 +309,14 @@ checkout instead.
 
 ```bash
 docker compose up -d            # pulls the published image; add --build to build from the checkout
-docker compose exec hvbackup hvbackup init-admin admin
 ```
+
+Open `https://<host>:8460`. While the server has no account, the sign-in page
+asks for the first administrator (username and a password of 8 characters or
+more) and signs you in. Scripts can still do it from the shell:
+`docker compose exec hvbackup hvbackup init-admin admin`. Then set the public
+URL and the time zone under **Settings → Server**; cron schedules run in that
+zone.
 
 Or let the bootstrap do all of it, including `.env`:
 
@@ -323,7 +333,10 @@ sudo ./packaging/get.sh --docker --repo /srv/hvbackup --url https://backup.examp
 | Restart | `docker compose restart` |
 | Upgrade | `git pull && docker compose pull && docker compose up -d` (or `--build`) |
 | Stop | `docker compose down` (data and repository stay) |
-| Back up the catalog volume | `docker run --rm -v nexusbackup_hvbackup-data:/d -v "$PWD":/b alpine tar czf /b/hvbackup-data.tgz -C /d .` |
+| Back up the catalog | **Settings → Catalog → Download a backup now**, or rely on the daily copy in `<repository>/catalog/`; by hand: `docker run --rm -v nexusbackup_hvbackup-data:/d -v "$PWD":/b alpine tar czf /b/hvbackup-data.tgz -C /d .` |
+| Restore the catalog | **Settings → Catalog**: upload an archive or pick a repository copy, then **Restart now**; the old catalog stays as `catalog.db.before-restore` |
+| Logs in the UI | **Settings → Server log** (last 4000 lines, filter, level switch) |
+| Restart | **Settings → Server → Restart server** (waits for running tasks), or `docker compose restart` |
 
 The volume name is prefixed with the Compose project name, the directory name
 by default; `docker volume ls` shows it.
@@ -368,13 +381,16 @@ sudo apt install ./dist/hvbackup_*.deb
 ```
 
 The package installs the same files as [section 4.5](#45-what-got-installed)
-and starts the service. Set `HVB_REPO` and `HVB_URL` in
-`/etc/hvbackup/hvbackup.conf`, restart, and create the admin:
+and starts the service. Set `HVB_REPO` in `/etc/hvbackup/hvbackup.conf`,
+restart, and create the first administrator on the sign-in page (or from the
+shell):
 
 ```bash
 sudo systemctl restart hvbackup
-sudo -u hvbackup HVB_CONFIG=/etc/hvbackup/hvbackup.conf /opt/hvbackup/venv/bin/hvbackup init-admin admin
+sudo -u hvbackup HVB_CONFIG=/etc/hvbackup/hvbackup.conf /opt/hvbackup/venv/bin/hvbackup init-admin admin   # optional
 ```
+
+The public URL and the other runtime settings are under **Settings → Server**.
 
 Installed on a VM where `/etc/hvbackup/agent.conf` already exists, the same
 package enables `hvbackup-agent` instead of the server.
@@ -530,11 +546,12 @@ automatically on start.
 
 ## 12. Production checklist
 
-- `HVB_URL` is the name in DNS and on the certificate; proxies, nodes and vCenter use it.
+- The public URL (**Settings → Server**, or `HVB_URL`) is the name in DNS and on the certificate; proxies, nodes and vCenter use it.
+- The time zone in **Settings → Server** is the one the schedules should follow (a container runs on UTC otherwise).
 - A real certificate ([4.6](#46-certificate) or [5.5](#55-your-own-certificate-in-docker)), then `HVB_INSECURE=0` and `HVB_CA` on the clients.
 - A dedicated vCenter role with the privileges from the README rather than an administrator.
 - The repository on checksumming storage, monitored for free space (the dashboard tile and `hvbackup status --tsv` report it).
-- `/var/lib/hvbackup` backed up: the catalog is the index to every chunk.
+- The daily catalog copy into the repository left on (**Settings → Catalog**), and one downloaded archive kept off the server.
 - Nightly jobs with retention set; garbage collection runs by itself after retention deletes points.
 - A restore tested once, onto a scratch network.
 - Monitoring: `hvbackup status --tsv` for scripts, the Nexus Dashboard plug-in, or the `failed_runs_24h` field of `GET /api/v1/status`.

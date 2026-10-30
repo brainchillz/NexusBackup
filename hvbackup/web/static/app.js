@@ -339,7 +339,7 @@ async function jobDialog(job, preset) {
     <label class="f"><span>Name</span><input name="name" value="${esc(j.name)}" placeholder="e.g. nightly-core"></label>
     <div class="row">
       <label class="f"><span>Connection</span><select name="connection_id" ${job ? 'disabled' : ''}>${conns.map(c => `<option value="${c.id}" ${c.id === j.connection_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
-      <label class="f"><span>Schedule (cron, server local time)</span><input name="schedule" value="${esc(j.schedule || '')}" list="cronp"><datalist id="cronp">${presets.map(p => `<option value="${p[0]}">${p[1]}</option>`).join('')}</datalist></label>
+      <label class="f"><span>Schedule (cron, in the server's zone${window.SERVER_TZ ? ': ' + esc(window.SERVER_TZ) : ''})</span><input name="schedule" value="${esc(j.schedule || '')}" list="cronp"><datalist id="cronp">${presets.map(p => `<option value="${p[0]}">${p[1]}</option>`).join('')}</datalist></label>
     </div>
     <div class="row">
       <label class="f"><span>Keep last N restore points (0 = unlimited)</span><input name="keep_last" type="number" min="0" value="${esc(j.retention.keep_last || 0)}"></label>
@@ -406,7 +406,7 @@ async function replicationDialog(rep) {
     <p class="err" id="convwarn" style="display:none"></p>
     <div class="row">
       <label class="f"><span>Replica name suffix</span><input name="suffix" value="${esc(o.suffix === undefined ? '-replica' : o.suffix)}"></label>
-      <label class="f"><span>Schedule (cron, server local time; optional)</span><input name="schedule" value="${esc(j.schedule || '')}" list="cronr"><datalist id="cronr">${presets.map(p => `<option value="${p[0]}">${p[1]}</option>`).join('')}</datalist></label>
+      <label class="f"><span>Schedule (cron, in the server's zone${window.SERVER_TZ ? ': ' + esc(window.SERVER_TZ) : ''}; optional)</span><input name="schedule" value="${esc(j.schedule || '')}" list="cronr"><datalist id="cronr">${presets.map(p => `<option value="${p[0]}">${p[1]}</option>`).join('')}</datalist></label>
     </div>
     <label class="c"><input type="checkbox" name="after_backup" ${j.after_backup ? 'checked' : ''}> Sync after every backup of a member VM</label>
     <label class="c"><input type="checkbox" name="new_identity" ${o.new_identity === false ? '' : 'checked'}> New identity for the copy (fresh MAC addresses and BIOS UUID). Untick to keep the original's, for a failover where the original will be gone.</label>

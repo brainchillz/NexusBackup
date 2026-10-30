@@ -2,15 +2,17 @@
 changed object; the UI and CLI are plain clients of these routes."""
 import json
 import os
+import threading
 import time
 from urllib.parse import urlparse
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import APP_VERSION, config, db
-from ..core import auth, ops, scheduler, secrets, tasks
+from ..core import auth, ops, scheduler, secrets, settings, tasks
 from ..store.chunks import repo
 from .deps import COOKIE, current_user, require
 
@@ -33,10 +35,37 @@ def login(body: Login, response: Response):
     if not u:
         db.audit(body.username, 'login_failed')
         raise HTTPException(401, 'bad username or password')
-    response.set_cookie(COOKIE, auth.make_session(u['username']), httponly=True, samesite='lax', max_age=auth.SESSION_TTL,
+    response.set_cookie(COOKIE, auth.make_session(u['username']), httponly=True, samesite='lax', max_age=auth.session_ttl(),
                         secure=True)
     db.audit(u['username'], 'login')
     return {'username': u['username'], 'role': u['role']}
+
+
+class Setup(BaseModel):
+    username: str = Field(pattern=r'^[a-z0-9][a-z0-9._-]{0,63}$')
+    password: str = Field(min_length=8)
+
+
+@r.get('/auth/setup')
+def setup_state():
+    """Whether the server still has no account at all (then /login shows the first-admin form)."""
+    return {'needed': auth.count_users() == 0}
+
+
+_setup_lock = threading.Lock()
+
+
+@r.post('/auth/setup', status_code=201)
+def setup(body: Setup, response: Response):
+    """Create the first administrator. Works only while the users table is empty, so it is
+    a one-shot door that closes itself; afterwards accounts come from Settings > Users."""
+    with _setup_lock:
+        if auth.count_users():
+            raise HTTPException(409, 'an account exists already; sign in')
+        auth.create_user(body.username, body.password, 'admin')
+    db.audit(body.username, 'setup', 'first administrator created from the sign-in page')
+    response.set_cookie(COOKIE, auth.make_session(body.username), httponly=True, samesite='lax', max_age=auth.session_ttl(), secure=True)
+    return {'username': body.username, 'role': 'admin'}
 
 
 @r.post('/auth/logout')
@@ -768,7 +797,7 @@ def deploy_proxy(body: ProxyDeployIn, request: Request, user=Depends(require('ad
     cr = ops.connection(body.connection_id)
     if cr['type'] not in ('vcenter', 'esxi'):
         raise HTTPException(400, f'proxy VMs are deployed on vSphere connections, not {cr["type"]}')
-    url = (body.server_url or config.PUBLIC_URL or str(request.base_url)).rstrip('/')
+    url = (body.server_url or settings.public_url(str(request.base_url))).rstrip('/')
     hostpart = (urlparse(url).hostname or '').lower()
     if hostpart in ('', 'localhost', '127.0.0.1', '::1'):
         raise HTTPException(400, 'the proxy must reach this server by a routable address: set HVB_URL in hvbackup.conf or pass server_url')
@@ -785,6 +814,48 @@ def deploy_proxy(body: ProxyDeployIn, request: Request, user=Depends(require('ad
 def proxy_image(user=Depends(current_user)):
     """The cloud image proxy VMs are deployed from and whether it is already cached."""
     from ..core import proxy_deploy
+    return proxy_deploy.image_status()
+
+
+@r.post('/proxies/image', status_code=201)
+async def upload_proxy_image(file: UploadFile = File(...), user=Depends(require('admin'))):
+    """Upload an OVA for offline sites; it becomes the local proxy image setting."""
+    import shutil
+    from ..core import proxy_deploy
+    name = os.path.basename(file.filename or 'proxy-image.ova')
+    if not name.lower().endswith('.ova'):
+        raise HTTPException(400, 'the proxy image must be an OVA')
+    name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in name)
+    os.makedirs(config.IMAGE_DIR, exist_ok=True)
+    path = os.path.join(config.IMAGE_DIR, 'uploaded-' + name)
+    with open(path + '.part', 'wb') as f:
+        shutil.copyfileobj(file.file, f, 8 << 20)
+    os.replace(path + '.part', path)
+    try:
+        settings.update({'proxy_image': path}, user=user['username'])
+    except ValueError as e:
+        os.unlink(path)
+        raise HTTPException(400, str(e))
+    db.audit(user['username'], 'proxy_image_uploaded', path)
+    return proxy_deploy.image_status()
+
+
+@r.delete('/proxies/image')
+def delete_proxy_image(user=Depends(require('admin'))):
+    """Forget the local proxy image; an uploaded file is deleted, a path set by hand is only unset."""
+    from ..core import proxy_deploy
+    st = proxy_deploy.image_status()
+    if not st.get('local'):
+        raise HTTPException(404, 'no local image is set')
+    try:
+        settings.update({'proxy_image': None}, user=user['username'])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if st.get('uploaded'):
+        try:
+            os.unlink(st['path'])
+        except FileNotFoundError:
+            pass
     return proxy_deploy.image_status()
 
 
@@ -843,10 +914,11 @@ def status(user=Depends(current_user)):
             'failed_runs_24h': f"SELECT COUNT(*) FROM runs WHERE status='failed' AND started>{time.time() - 86400}",
         }.items()}
         last_gc = c.execute("SELECT value FROM meta WHERE key='last_gc'").fetchone()
-    from ..core import convert
+    from ..core import catalog_backup, convert, server, updates
     return {'version': APP_VERSION, 'repository': {'path': rep.path, 'id': rep.id, **rep.stats()},
             'proxies_online': len(ops.online_proxies()), 'last_gc': float(last_gc[0]) if last_gc else None,
-            'conversion': convert.availability(), **counts}
+            'conversion': convert.availability(), 'timezone': settings.get('timezone'), 'update': updates.status(),
+            'restart_pending': server.restart_pending(), 'catalog_restore_pending': catalog_backup.pending() is not None, **counts}
 
 
 @r.post('/maintenance/gc')
@@ -858,3 +930,152 @@ def run_gc(grace_seconds: int = 3600, user=Depends(require('admin'))):
 def audit_log(limit: int = 200, user=Depends(require('admin'))):
     with db.conn() as c:
         return _rows(c, 'SELECT * FROM audit ORDER BY id DESC LIMIT ?', (limit,))
+
+
+# ── settings ─────────────────────────────────────────────────────────
+@r.get('/settings')
+def get_settings(user=Depends(require('admin'))):
+    """Every runtime setting with its value, where it comes from (default, settings table,
+    environment, config file) and whether the UI may change it."""
+    from ..core import server
+    return {'settings': settings.describe(), 'restart_pending': server.restart_pending()}
+
+
+@r.patch('/settings')
+def patch_settings(body: Dict[str, Any], user=Depends(require('admin'))):
+    """Change settings {key: value}; null or the default clears the row. Returns the keys
+    that need a restart to take effect."""
+    try:
+        restart = settings.update(body, user=user['username'])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {'settings': settings.describe(), 'restart_needed': restart}
+
+
+@r.get('/settings/timezones')
+def timezones(user=Depends(current_user)):
+    import zoneinfo
+    return sorted(zoneinfo.available_timezones())
+
+
+@r.post('/server/restart')
+def restart_server(reason: str = '', user=Depends(require('admin'))):
+    """Exit once no task runs (10 minutes at most); the supervisor starts the server again."""
+    from ..core import server
+    return server.request_restart(user['username'], reason)
+
+
+@r.get('/logs')
+def server_logs(limit: int = 200, level: Optional[str] = None, after: Optional[int] = None, q: Optional[str] = None,
+                user=Depends(require('admin'))):
+    """The last lines of the server log kept in memory (4000 at most); `after` an id for
+    incremental polling, `level` a floor, `q` a case-insensitive filter."""
+    from ..core import logs
+    return logs.tail(limit=min(max(limit, 1), logs.RING), level=level, after=after, grep=q)
+
+
+# ── catalog backup ───────────────────────────────────────────────────
+@r.get('/catalog/backups')
+def catalog_backups(user=Depends(require('admin'))):
+    from ..core import catalog_backup
+    with db.conn() as c:
+        last = c.execute("SELECT value FROM meta WHERE key='last_catalog_backup'").fetchone()
+    return {'copies': catalog_backup.list_copies(), 'directory': catalog_backup.repo_dir(), 'last': float(last[0]) if last else None,
+            'pending': catalog_backup.pending()}
+
+
+@r.get('/catalog/backup')
+def catalog_download(user=Depends(require('admin'))):
+    """A backup archive of the catalog, the secret key and the certificate, made now."""
+    import io
+    from ..core import catalog_backup
+    buf = io.BytesIO()
+    catalog_backup.write(buf)
+    buf.seek(0)
+    name = time.strftime('hvbackup-catalog-%Y%m%d-%H%M%S.tar')
+    db.audit(user['username'], 'catalog_download', name)
+    return StreamingResponse(buf, media_type='application/x-tar', headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
+
+@r.post('/catalog/backups', status_code=201)
+def catalog_copy_now(user=Depends(require('admin'))):
+    """Write a copy into the repository now (the daily copy does the same)."""
+    from ..core import catalog_backup
+    name = catalog_backup.write_copy(settings.get('catalog_backup_keep'))
+    db.audit(user['username'], 'catalog_copy', name)
+    return {'name': name, 'copies': catalog_backup.list_copies()}
+
+
+@r.delete('/catalog/backups/{name}')
+def catalog_copy_delete(name: str, user=Depends(require('admin'))):
+    from ..core import catalog_backup
+    if not catalog_backup.NAME.match(name):
+        raise HTTPException(400, 'bad name')
+    try:
+        os.unlink(os.path.join(catalog_backup.repo_dir(), name))
+    except FileNotFoundError:
+        raise HTTPException(404, 'no such copy')
+    return {'ok': True}
+
+
+class CatalogRestoreIn(BaseModel):
+    name: str
+
+
+@r.post('/catalog/restore')
+async def catalog_restore(file: Optional[UploadFile] = File(None), name: Optional[str] = None, user=Depends(require('admin'))):
+    """Stage a catalog restore from an uploaded archive or a copy in the repository (`name`).
+    It is applied at the next start; nothing changes until then."""
+    from ..core import catalog_backup
+    try:
+        if file is not None:
+            summary = catalog_backup.stage(file.file)
+            src = file.filename or 'upload'
+        elif name:
+            summary = catalog_backup.stage_copy(name)
+            src = name
+        else:
+            raise HTTPException(400, 'upload an archive or name a copy')
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.audit(user['username'], 'catalog_restore_staged', src)
+    return {'staged': True, 'source': src, **summary}
+
+
+@r.delete('/catalog/restore')
+def catalog_restore_discard(user=Depends(require('admin'))):
+    from ..core import catalog_backup
+    catalog_backup.discard_pending()
+    db.audit(user['username'], 'catalog_restore_discarded')
+    return {'ok': True}
+
+
+# ── themes ───────────────────────────────────────────────────────────
+@r.get('/themes')
+def list_themes(user=Depends(current_user)):
+    from ..core import themes
+    return themes.list_themes()
+
+
+@r.post('/themes', status_code=201)
+async def upload_theme(file: UploadFile = File(...), user=Depends(require('admin'))):
+    """Install a theme from a zip (theme.json, theme.css, optional theme.js and assets)."""
+    from ..core import themes
+    data = await file.read(themes.MAX_ZIP + 1)
+    try:
+        t = themes.install_zip(data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.audit(user['username'], 'theme_installed', t['id'])
+    return t
+
+
+@r.delete('/themes/{theme_id}')
+def delete_theme(theme_id: str, user=Depends(require('admin'))):
+    from ..core import themes
+    try:
+        themes.remove(theme_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    db.audit(user['username'], 'theme_removed', theme_id)
+    return {'ok': True}

@@ -1,7 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="card" id="servercard" hidden><h2>Server</h2><p class="muted">Runtime settings live in the catalog. A field set by an environment variable or <span class="mono">hvbackup.conf</span> is locked here and says so; change it there and restart.</p>
+<form id="settings-form" class="settings-grid" data-section="server"></form>
+<div class="toolbar" style="margin-top:10px"><button class="btn primary" id="save-settings">Save</button><button class="btn" id="restart">Restart server</button><span class="muted" id="settings-note"></span></div></div>
 <div class="card"><h2>Repository</h2><dl class="kv" id="repo"></dl><div class="toolbar" style="margin-top:10px"><button class="btn" id="gc" hidden>Run garbage collection</button><a class="btn" href="/api/docs" target="_blank">API documentation</a></div></div>
 <div class="card"><h2>API tokens</h2><p class="muted">Tokens act with the owner's role. Send them as <span class="mono">Authorization: Bearer hvb_…</span>; the CLI reads <span class="mono">HVB_TOKEN</span>.</p><div class="toolbar"><button class="btn primary" id="newtoken">New token</button></div><div id="tokens"></div></div>
+<div class="card" id="catalogcard" hidden><a id="catalog"></a><h2>Catalog</h2><p class="muted">The catalog (what was backed up, where, by whom), the secret key that unlocks the stored hypervisor credentials and the server certificate. The repository holds the data; with one of these archives it rebuilds a dead server.</p>
+<form class="settings-grid" data-section="catalog" id="catalog-form"></form>
+<div class="toolbar" style="margin-top:10px"><a class="btn" href="/api/v1/catalog/backup" download>Download a backup now</a><button class="btn" id="catalog-copy">Copy into the repository now</button><button class="btn" id="catalog-upload">Restore from an archive…</button><span class="muted" id="catalog-note"></span></div>
+<div id="catalog-pending" class="notice" hidden></div>
+<div id="catalog-copies"></div></div>
+<div class="card" id="proxyimagecard" hidden><h2>Proxy image</h2><p class="muted">The cloud image proxy VMs are deployed from. Offline sites upload an OVA instead of downloading.</p>
+<form class="settings-grid" data-section="proxy" id="proxy-form"></form>
+<div class="toolbar" style="margin-top:10px"><button class="btn" id="image-upload">Upload an OVA…</button><button class="btn danger" id="image-forget" hidden>Forget the local image</button><span class="muted" id="image-note"></span></div></div>
+<div class="card" id="themescard" hidden><h2>Themes</h2><p class="muted">Theme drop-ins (Nexus Dashboard's contract: <span class="mono">theme.json</span>, <span class="mono">theme.css</span>, optional <span class="mono">theme.js</span>) as a zip. Everyone picks a theme in the sidebar.</p>
+<div class="toolbar"><button class="btn" id="theme-upload">Upload a theme…</button></div><div id="themes"></div></div>
+<div class="card" id="logscard" hidden><h2>Server log</h2><div class="toolbar"><select id="log-level"><option value="debug">debug and up</option><option value="info" selected>info and up</option><option value="warning">warnings and errors</option></select><input id="log-q" placeholder="filter" style="max-width:220px"><label class="c"><input type="checkbox" id="log-follow" checked> follow</label><span class="spacer"></span><span class="muted">last 4000 lines, kept in memory; the full log is on stdout (journal or container log)</span></div><pre class="logbox" id="logbox"></pre></div>
 <div class="card" id="userscard" hidden><h2>Users</h2><div class="toolbar"><button class="btn primary" id="newuser">Add user</button></div><div id="users"></div></div>
 <div class="card" id="auditcard" hidden><h2>Audit log</h2><div id="audit"></div></div>
 {% endblock %}
@@ -34,7 +48,111 @@ document.addEventListener('DOMContentLoaded', () => {
       { h: 'Time', f: a => esc(fmtTime(a.ts)) }, { h: 'User', f: a => esc(a.user || '') }, { h: 'Action', f: a => esc(a.action) }, { h: 'Detail', f: a => esc(a.detail || '') },
     ], await api('GET', '/api/v1/audit?limit=100'), 'Nothing logged yet.');
   }
-  loadRepo(); loadTokens(); loadUsers();
+  // ── runtime settings ──
+  let SPEC = [];
+  function field(sp) {
+    const id = 'set-' + sp.key, lock = sp.locked ? ` <span class="badge plain" title="${esc(sp.env)}">set by the ${esc(sp.source)}</span>` : '';
+    let input;
+    if (sp.kind === 'bool') input = `<label class="c"><input type="checkbox" name="${sp.key}" ${sp.value ? 'checked' : ''} ${sp.locked ? 'disabled' : ''}> ${esc(sp.label)}${lock}</label>`;
+    else if (sp.kind === 'choice') input = `<label class="f"><span>${esc(sp.label)}${lock}</span><select name="${sp.key}" ${sp.locked ? 'disabled' : ''}>${sp.choices.map(c => `<option ${c === sp.value ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`;
+    else if (sp.kind === 'timezone') input = `<label class="f"><span>${esc(sp.label)}${lock}</span><input name="${sp.key}" value="${esc(sp.value)}" list="tzlist" ${sp.locked ? 'disabled' : ''}></label>`;
+    else input = `<label class="f"><span>${esc(sp.label)}${lock}${sp.restart ? ' <span class="badge plain">restart</span>' : ''}</span><input name="${sp.key}" value="${esc(sp.value)}" ${sp.kind === 'int' ? 'type="number"' : ''} ${sp.locked ? 'disabled' : ''} placeholder="${esc(sp.default)}"></label>`;
+    return `<div class="setting" id="${id}">${input}<div class="muted help">${esc(sp.help || '')}</div></div>`;
+  }
+  async function loadSettings() {
+    if (!admin) return;
+    const res = await api('GET', '/api/v1/settings');
+    SPEC = res.settings;
+    for (const f of document.querySelectorAll('form.settings-grid')) f.innerHTML = SPEC.filter(s => s.section === f.dataset.section).map(field).join('');
+    if (!document.getElementById('tzlist')) { const dl = document.createElement('datalist'); dl.id = 'tzlist'; document.body.appendChild(dl); api('GET', '/api/v1/settings/timezones').then(z => { dl.innerHTML = z.map(t => `<option value="${esc(t)}">`).join(''); }); }
+    document.getElementById('settings-note').textContent = res.restart_pending ? 'Restart pending: the server exits as soon as no task runs.' : '';
+  }
+  async function saveSettings() {
+    const changes = {};
+    for (const sp of SPEC) {
+      if (sp.locked) continue;
+      const el = document.querySelector(`[name="${sp.key}"]`); if (!el) continue;
+      const v = el.type === 'checkbox' ? el.checked : el.value;
+      if (String(v) !== String(sp.value)) changes[sp.key] = v === '' ? null : v;
+    }
+    if (!Object.keys(changes).length) { toast('Nothing changed'); return; }
+    const res = await api('PATCH', '/api/v1/settings', changes);
+    toast('Saved' + (res.restart_needed.length ? '; restart to apply ' + res.restart_needed.join(', ') : ''));
+    await loadSettings(); loadImage();
+  }
+  document.getElementById('save-settings').onclick = e => { e.preventDefault(); saveSettings().catch(err => toast(err.message)); };
+  document.querySelectorAll('form.settings-grid').forEach(f => f.onsubmit = e => { e.preventDefault(); saveSettings().catch(err => toast(err.message)); });
+  document.getElementById('restart').onclick = () => confirmModal('Restart server', 'The server exits as soon as no task is running (10 minutes at most) and the service manager starts it again. Browsers reconnect by themselves.', async () => { await api('POST', '/api/v1/server/restart?reason=settings'); loadSettings(); }, 'danger');
+
+  // ── catalog ──
+  async function loadCatalog() {
+    if (!admin) return;
+    const res = await api('GET', '/api/v1/catalog/backups');
+    document.getElementById('catalog-note').textContent = (res.last ? 'last copy ' + ago(res.last) : 'no copy in the repository yet') + ' · ' + res.directory;
+    const p = document.getElementById('catalog-pending');
+    p.hidden = !res.pending;
+    if (res.pending) p.innerHTML = `A catalog restore is staged (${esc(res.pending.members.join(', '))}, staged ${esc(ago(res.pending.staged))}). It replaces the catalog at the next start; the current one is kept as catalog.db.before-restore. <button class="btn sm danger" id="restore-apply">Restart now</button> <button class="btn sm" id="restore-discard">Discard</button>`;
+    renderTable(document.getElementById('catalog-copies'), [
+      { h: 'Copy in the repository', f: c => `<span class="mono">${esc(c.name)}</span>` }, { h: 'Size', f: c => esc(fmtBytes(c.size)) }, { h: 'Written', f: c => titleTime(c.created) },
+      { h: '', f: c => `<button class="btn sm" data-a="restore-copy" data-name="${esc(c.name)}">Restore from this copy</button> <button class="btn sm danger" data-a="del-copy" data-name="${esc(c.name)}">Delete</button>` },
+    ], res.copies, 'No copies in the repository yet.');
+  }
+  document.getElementById('catalog-copy').onclick = async () => { await api('POST', '/api/v1/catalog/backups'); toast('Copy written'); loadCatalog(); };
+  function uploadModal(title, text, accept, url, done) {
+    modal({ title, body: `<p>${esc(text)}</p><input type="file" name="file" accept="${accept}">`, buttons: [{ label: 'Cancel' }, { label: 'Upload', cls: 'primary', onClick: async m => {
+      const f = m.querySelector('[name=file]').files[0]; if (!f) throw new Error('choose a file');
+      const fd = new FormData(); fd.append('file', f);
+      const r = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || r.statusText);
+      done(data);
+    } }] });
+  }
+  document.getElementById('catalog-upload').onclick = () => uploadModal('Restore the catalog from an archive', 'An archive from "Download a backup now" or a copy from the repository. Nothing changes until the server restarts; you get to look at what the archive holds first.', '.tar', '/api/v1/catalog/restore', d => { toast(`Staged: ${d.users} users, ${d.vms} VMs, ${d.restore_points} restore points`); loadCatalog(); });
+
+  // ── proxy image ──
+  async function loadImage() {
+    if (!admin) return;
+    const img = await api('GET', '/api/v1/proxies/image');
+    document.getElementById('image-note').textContent = img.local ? `local image ${img.path}${img.cached ? ' (' + fmtBytes(img.size) + ')' : ' (missing!)'}` : (img.cached ? `cached: ${img.path} (${fmtBytes(img.size)})` : 'not downloaded yet; the first deployment fetches it');
+    document.getElementById('image-forget').hidden = !img.local;
+  }
+  document.getElementById('image-upload').onclick = () => uploadModal('Upload a proxy image', 'An Ubuntu 24.04 cloud OVA (or another cloud-init image the agent bootstrap supports). It becomes the local image and replaces the download.', '.ova', '/api/v1/proxies/image', () => { toast('Image uploaded'); loadSettings(); loadImage(); });
+  document.getElementById('image-forget').onclick = () => confirmModal('Forget the local image', 'Deployments download the image from the URL again. An uploaded file is deleted.', async () => { await api('DELETE', '/api/v1/proxies/image'); loadSettings(); loadImage(); }, 'danger');
+
+  // ── themes ──
+  async function loadThemes() {
+    if (!admin) return;
+    renderTable(document.getElementById('themes'), [
+      { h: 'Id', f: t => `<span class="mono">${esc(t.id)}</span>` }, { h: 'Name', f: t => esc(t.name) }, { h: 'Modes', f: t => esc(t.modes.join(', ')) }, { h: 'Variants', f: t => esc((t.variants || []).map(v => v.id || v).join(', ')) }, { h: 'Files', f: t => esc(t.files.join(', ')) },
+      { h: '', f: t => `<button class="btn sm danger" data-a="deltheme" data-id="${esc(t.id)}">Delete</button>` },
+    ], await api('GET', '/api/v1/themes'), 'No themes installed; the built-in look is in use.');
+  }
+  document.getElementById('theme-upload').onclick = () => uploadModal('Upload a theme', 'A zip holding theme.json and theme.css (and theme.js, fonts, images) at its root or in one directory.', '.zip', '/api/v1/themes', t => { toast(`Theme ${t.name} installed; reload to pick it`); loadThemes(); });
+
+  // ── logs ──
+  let lastLog = null;
+  const box = document.getElementById('logbox');
+  async function loadLogs(reset) {
+    if (!admin) return;
+    if (reset) { lastLog = null; box.textContent = ''; }
+    const q = new URLSearchParams({ limit: 400, level: document.getElementById('log-level').value });
+    const f = document.getElementById('log-q').value.trim(); if (f) q.set('q', f);
+    if (lastLog) q.set('after', lastLog);
+    const rows = await api('GET', '/api/v1/logs?' + q);
+    if (!rows.length) return;
+    const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+    box.textContent += rows.map(l => `${new Date(l.ts * 1000).toLocaleTimeString()} ${l.level.toUpperCase().padEnd(7)} ${l.logger}: ${l.message}\n`).join('');
+    lastLog = rows[rows.length - 1].id;
+    const lines = box.textContent.split('\n'); if (lines.length > 4000) box.textContent = lines.slice(-4000).join('\n');
+    if (atEnd || document.getElementById('log-follow').checked) box.scrollTop = box.scrollHeight;
+  }
+  document.getElementById('log-level').onchange = () => loadLogs(true);
+  document.getElementById('log-q').oninput = () => loadLogs(true);
+  if (admin) pollWhile(async () => { if (document.getElementById('log-follow').checked) await loadLogs(); return true; }, 3000);
+
+  for (const id of ['servercard', 'catalogcard', 'proxyimagecard', 'themescard', 'logscard']) document.getElementById(id).hidden = !admin;
+  loadRepo(); loadTokens(); loadUsers(); loadSettings(); loadCatalog(); loadImage(); loadThemes(); loadLogs(true);
   document.getElementById('gc').onclick = () => confirmModal('Run garbage collection', 'Remove chunks no restore point references. Chunks written in the last hour are kept.', async () => startedTask(await api('POST', '/api/v1/maintenance/gc'), 'GC started'));
   document.getElementById('newtoken').onclick = () => modal({ title: 'New API token', body: `<label class="f"><span>Name</span><input name="name" placeholder="cli on my laptop"></label>${admin ? '<label class="f"><span>For user (blank = me)</span><input name="username"></label>' : ''}`,
     buttons: [{ label: 'Cancel' }, { label: 'Create', cls: 'primary', onClick: async m => {
@@ -47,8 +165,13 @@ document.addEventListener('DOMContentLoaded', () => {
     <label class="f"><span>Role</span><select name="role"><option>viewer</option><option>restore</option><option>operator</option><option>admin</option></select></label>`,
     buttons: [{ label: 'Cancel' }, { label: 'Add', cls: 'primary', onClick: async m => { await api('POST', '/api/v1/users', { username: val(m, 'username'), password: val(m, 'password'), role: val(m, 'role') }); loadUsers(); } }] });
   document.body.addEventListener('click', async e => {
-    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const b = e.target.closest('button[data-a],button#restore-apply,button#restore-discard'); if (!b) return;
     const a = b.dataset.a, u = b.dataset.u;
+    if (a === 'restore-copy') confirmModal('Restore from this copy', `Stage ${b.dataset.name} as the catalog. Nothing changes until the server restarts.`, async () => { const d = await api('POST', `/api/v1/catalog/restore?name=${encodeURIComponent(b.dataset.name)}`); toast(`Staged: ${d.users} users, ${d.vms} VMs, ${d.restore_points} restore points`); loadCatalog(); });
+    if (a === 'del-copy') confirmModal('Delete copy', `Delete ${b.dataset.name} from the repository?`, async () => { await api('DELETE', `/api/v1/catalog/backups/${encodeURIComponent(b.dataset.name)}`); loadCatalog(); }, 'danger');
+    if (a === 'deltheme') confirmModal('Delete theme', `Delete theme "${b.dataset.id}"? Browsers using it fall back to the built-in look.`, async () => { await api('DELETE', `/api/v1/themes/${encodeURIComponent(b.dataset.id)}`); loadThemes(); }, 'danger');
+    if (b.id === 'restore-apply') confirmModal('Restart and apply the restore', 'The server exits as soon as no task runs and comes back with the staged catalog.', async () => { await api('POST', '/api/v1/server/restart?reason=catalog%20restore'); loadSettings(); }, 'danger');
+    if (b.id === 'restore-discard') { await api('DELETE', '/api/v1/catalog/restore'); loadCatalog(); }
     if (a === 'deltoken') confirmModal('Revoke token', 'Revoke this token? Anything using it stops working.', async () => { await api('DELETE', `/api/v1/tokens/${b.dataset.id}`); loadTokens(); }, 'danger');
     if (a === 'deluser') confirmModal('Delete user', `Delete user "${u}" and their tokens?`, async () => { await api('DELETE', `/api/v1/users/${u}`); loadUsers(); }, 'danger');
     if (a === 'pw') modal({ title: `Set password for ${u}`, body: `<label class="f"><span>New password</span><input name="password" type="password" autocomplete="new-password"></label>`, buttons: [{ label: 'Cancel' }, { label: 'Set', cls: 'primary', onClick: async m => { await api('PATCH', `/api/v1/users/${u}`, { password: val(m, 'password') }); toast('Password set'); } }] });

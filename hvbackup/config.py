@@ -8,10 +8,11 @@ package and the container install; environment variables override the file.
   HVB_URL         public base URL (what proxies and browsers reach)
   HVB_TLS_CERT / HVB_TLS_KEY   optional PEM pair; self-signed is generated when unset
   HVB_CONFIG      path of the config file           default /etc/hvbackup/hvbackup.conf
-  HVB_PROXY_IMAGE_URL     cloud image (OVA) the server deploys proxy VMs from; default Ubuntu 24.04
-  HVB_PROXY_IMAGE_SHA256  its checksum when the URL has no SHA256SUMS next to it (optional)
-  HVB_PROXY_IMAGE         a local OVA to use instead of downloading (offline sites)
-  HVB_CONCURRENCY         backups/restores/syncs running at once per connection (default 2)
+
+Everything else (public URL, time zone, log level, session lifetime, proxy image, catalog
+copies, concurrency) is a runtime setting edited in Settings and kept in the catalog;
+the matching environment variable or file key, when set, is the bootstrap default and
+locks the field (core/settings.py).
 """
 import os
 
@@ -44,14 +45,9 @@ DATA_DIR = get('HVB_DATA_DIR', '/var/lib/hvbackup')
 REPO_DIR = get('HVB_REPO', os.path.join(DATA_DIR, 'repo'))
 BIND = get('HVB_BIND', '0.0.0.0')
 PORT = int(get('HVB_PORT', '8460'))
-PUBLIC_URL = get('HVB_URL', '')
 TLS_CERT = get('HVB_TLS_CERT', '')
 TLS_KEY = get('HVB_TLS_KEY', '')
 CHUNK_SIZE = 4 * 1024 * 1024
-LOG_LEVEL = get('HVB_LOG_LEVEL', 'info')
-PROXY_IMAGE_URL = get('HVB_PROXY_IMAGE_URL', 'https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.ova')
-PROXY_IMAGE_SHA256 = get('HVB_PROXY_IMAGE_SHA256', '')
-PROXY_IMAGE = get('HVB_PROXY_IMAGE', '')
 IMAGE_DIR = os.path.join(DATA_DIR, 'images')
 
 DB_PATH = os.path.join(DATA_DIR, 'catalog.db')

@@ -208,14 +208,42 @@ Next, in order:
    cross-vCenter vMotion needs a second vCenter the lab does not have (the
    unregister/re-register case has the same code path, covered by tests).
 
+7. **Container-first settings** (built 2026-10-30). `core/settings.py`: a
+   `settings` table in the catalog, `SPEC` of keys with env var, default,
+   kind and validation; the environment or `hvbackup.conf` key, when set,
+   wins and locks the field (empty counts as unset, since compose.yml passes
+   `HVB_URL=${HVB_URL:-}`); `GET/PATCH /api/v1/settings`, Settings → Server
+   with locked badges, `hvbackup settings list|set`. Keys: public URL, time
+   zone, session hours, log level, update check, bind, port (restart), per
+   connection concurrency (read at every slot acquire), catalog copies,
+   proxy image URL/SHA-256/local file. Found on the way: croniter reads a
+   bare timestamp as UTC, so every cron schedule ran in UTC whatever the
+   host's zone; `scheduler.next_run` now passes a zone-aware datetime and
+   `settings.apply()` exports TZ + tzset so `time.localtime` (GC hour)
+   follows too; the dialogs name the zone. First administrator from the
+   sign-in page (`POST /auth/setup`, open only while `users` is empty).
+   Catalog backup: `core/catalog_backup.py`, tar of a SQLite-API copy of
+   catalog.db + secret.key + certs, daily into `<repo>/catalog/` (keep N),
+   download from Settings, restore staged into `<data>/restore-pending/`
+   and applied by `apply_pending()` at the next start (old catalog kept as
+   `.before-restore`). `core/logs.py` ring handler on the root logger,
+   `GET /logs`, Settings → Server log, `hvbackup logs`. `core/server.py`
+   restart (exit 3 once no task runs; unit now `Restart=always`).
+   `core/updates.py` daily GitHub release check, sidebar notice.
+   `core/themes.py` (moved out of ui.py) with zip install/remove;
+   `POST /proxies/image` OVA upload. 11 tests in `tests/test_settings.py`,
+   smoke-tested on a throwaway server. Not done: notifications (SMTP,
+   webhook) have no settings yet; they come with SSO as the first UI-first
+   features on the table.
+
 Open decisions for the owner: which real VMs join the nightly jobs during the
-soak (vSphere and Proxmox). SSO (4) is next, then Windows conversion (5), then
-instant recovery (Phase 6, kept for last on 2026-10-26). Added
-2026-10-25 for the public audience: a certificate manager in Settings
-(regenerate the self-signed pair, import a real one) and container-first
-settings (a settings table the UI edits, env vars as bootstrap defaults;
-first admin, public URL, time zone, catalog backup, logs, themes, proxy
-image, SSO and notifications UI-first; see Phase 6).
+soak (vSphere and Proxmox). Order decided 2026-10-30: the remaining Phase 6
+items first, in the order listed under Phase 6 (container-first settings,
+certificate manager, verification jobs, file-level restore, Postgres,
+instant recovery, VDDK last and optional), then SSO (4), then Windows
+conversion (5). Encryption at rest is dropped from the plan (2026-10-30):
+the repository sits on storage the owner controls; disk or filesystem
+encryption under it does the job without a key the server must hold.
 
 Where things are written down: this file (design and status), `README.md`
 (install and use), `../OTNOPS-Infra/hosts/testserver.md` (serenity install,
@@ -386,7 +414,7 @@ Modelled on Proxmox Backup Server, which has proven the shape for VM images.
   rounded up to chunk boundaries.
 - Chunk identity by BLAKE3 hash. Store on the filesystem under the hash
   prefix. Zero chunks are elided.
-- zstd compression per chunk. Optional encryption at rest per repository.
+- zstd compression per chunk.
 - A restore point is a manifest: the neutral VM spec, plus for each disk an
   index mapping chunk number to hash.
 - Garbage collection by mark-and-sweep over manifests. Retention is a policy
@@ -401,7 +429,7 @@ lives under it:
 
 ```
 <repo>/
-  repo.json          # format version, repository ID, encryption settings
+  repo.json          # format version, repository ID
   chunks/ab/cd/...   # content-addressed chunk files
   manifests/<vm-id>/<timestamp>.json
   staging/           # conversion overlays and ingest spool, safe to clear
@@ -709,9 +737,34 @@ Exit criteria for the full phase: round trip a Windows Server and a Linux VM
 in both directions with working networking and guest agent.
 
 ### Phase 6 — Hardening and extras
-Encryption at rest, verification jobs, VDDK accelerator, file-level restore
-by mounting images, instant recovery, Postgres. Done 2026-10-26: scheduled
-replication, multi-vCenter (§0 item 6).
+Done 2026-10-26: scheduled replication, multi-vCenter (§0 item 6). Dropped
+2026-10-30: encryption at rest (see §0). The rest, in the order they are
+built (decided 2026-10-30, ahead of SSO):
+
+1. **Container-first settings** (built 2026-10-30, §0 item 7). The settings
+   table and the Settings → Server page came first because the certificate
+   manager, SSO and notifications all land on them.
+2. **Certificate manager in Settings** (below).
+3. **Verification jobs.** A scheduled task that reads every chunk a restore
+   point references, checks the BLAKE3 hash against the name, and marks the
+   point verified or damaged (column on restore_points, badge in the UI,
+   alert in the dashboard plug-in); a weekly default that spreads the work;
+   optional test boot of a sample on a connection (NICs disconnected, tools
+   heartbeat, power off and delete).
+4. **File-level restore.** Mount a restore point's disk read-only from the
+   NBD export (`core/nbd.py`) through libguestfs on the server, browse the
+   filesystem in the UI, download a file or a directory as a tar; Windows
+   NTFS through libguestfs too. No guest agent push in the first cut.
+5. **Postgres.** `db.py` behind a thin adapter so the catalog can live in
+   Postgres for sites with several servers or a long history; SQLite stays
+   the default and the Docker image needs nothing new.
+6. **Instant recovery** (below).
+7. **VDDK accelerator**, optional and last: VMware does not permit
+   redistribution of the VDDK, so this can only be "bring your own VDDK"
+   on the proxy for faster hot-add reads; worth doing only if the proxy's
+   own path proves too slow on real workloads.
+
+Then Phase 4 (SSO), then the Windows half of Phase 5.
 
 **Instant recovery** (kept for last, 2026-10-26). Boot a VM straight from the
 repository and migrate its storage while it runs. Proxmox: attach the
@@ -745,7 +798,8 @@ front of :8460, `../OTNOPS-Infra/hosts/testserver.md` 2026-10-25) in
 `docs/INSTALL.md` either way. Later: ACME (Let's Encrypt, DNS-01 for
 internal names).
 
-**Container-first settings** (added 2026-10-25). Docker Compose is the
+**Container-first settings** (added 2026-10-25, built 2026-10-30 except
+notifications; see §0 item 7). Docker Compose is the
 primary deployment, and a container user has no shell, no config file and
 no data volume to hand; today every runtime setting is an environment
 variable or a `hvbackup.conf` key, the catalog has no settings table, and

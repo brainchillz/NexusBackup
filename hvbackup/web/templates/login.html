@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in · NexusBackup</title>
+<title>{{ title }} · NexusBackup</title>
 <link rel="stylesheet" href="/static/app.css">
 <script>
 (function () { try {
@@ -29,12 +29,23 @@ window.THEMES = {{ themes | tojson }};
   <div class="login-box">
     <h1>NexusBackup</h1>
     <p class="subtitle"><strong>hvbackup</strong> · v{{ version }}</p>
+    {% if setup %}
+    <p class="muted">This server has no account yet. Create the first administrator; more users come from Settings afterwards.</p>
+    <form id="f" data-setup="1">
+      <label class="f"><span>Username</span><input name="username" autocomplete="username" pattern="[a-z0-9][a-z0-9._-]*" value="admin" autofocus required></label>
+      <label class="f"><span>Password (8 characters or more)</span><input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label class="f"><span>Repeat password</span><input name="password2" type="password" autocomplete="new-password" minlength="8" required></label>
+      <div class="err" id="err"></div>
+      <button class="btn primary" type="submit">Create administrator</button>
+    </form>
+    {% else %}
     <form id="f">
       <label class="f"><span>Username</span><input name="username" autocomplete="username" autofocus required></label>
       <label class="f"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
       <div class="err" id="err"></div>
       <button class="btn primary" type="submit">Sign in</button>
     </form>
+    {% endif %}
   </div>
 </div>
 <script>
@@ -44,7 +55,12 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     document.getElementById('err').textContent = '';
     try {
-      await api('POST', '/api/v1/auth/login', { username: f.username.value, password: f.password.value });
+      if (f.dataset.setup) {
+        if (f.password.value !== f.password2.value) throw new Error('the passwords differ');
+        await api('POST', '/api/v1/auth/setup', { username: f.username.value, password: f.password.value });
+      } else {
+        await api('POST', '/api/v1/auth/login', { username: f.username.value, password: f.password.value });
+      }
       const next = new URLSearchParams(location.search).get('next') || '/';
       location.href = next.startsWith('/') ? next : '/';
     } catch (err) { document.getElementById('err').textContent = err.message; }

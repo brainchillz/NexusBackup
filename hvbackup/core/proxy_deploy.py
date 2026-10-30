@@ -32,24 +32,33 @@ AGENT_DEPS = 'blake3 requests zstandard urllib3'
 
 # ── image ────────────────────────────────────────────────────────────
 def image_status():
-    if config.PROXY_IMAGE:
-        return {'url': None, 'path': config.PROXY_IMAGE, 'cached': os.path.exists(config.PROXY_IMAGE),
-                'size': os.path.getsize(config.PROXY_IMAGE) if os.path.exists(config.PROXY_IMAGE) else None, 'local': True}
+    from . import settings
+    local = settings.get('proxy_image')
+    if local:
+        return {'url': None, 'path': local, 'cached': os.path.exists(local),
+                'size': os.path.getsize(local) if os.path.exists(local) else None, 'local': True,
+                'uploaded': os.path.dirname(os.path.realpath(local)) == os.path.realpath(config.IMAGE_DIR)}
     path = _cache_path()
-    return {'url': config.PROXY_IMAGE_URL, 'path': path, 'cached': os.path.exists(path),
+    return {'url': settings.get('proxy_image_url'), 'path': path, 'cached': os.path.exists(path),
             'size': os.path.getsize(path) if os.path.exists(path) else None, 'local': False}
 
 
+def _image_url():
+    from . import settings
+    return settings.get('proxy_image_url')
+
+
 def _cache_path():
-    name = os.path.basename(urllib.parse.urlparse(config.PROXY_IMAGE_URL).path) or 'proxy-image.ova'
+    name = os.path.basename(urllib.parse.urlparse(_image_url()).path) or 'proxy-image.ova'
     return os.path.join(config.IMAGE_DIR, name)
 
 
 def _expected_sha256(task):
-    if config.PROXY_IMAGE_SHA256:
-        return config.PROXY_IMAGE_SHA256.lower()
-    base = config.PROXY_IMAGE_URL.rsplit('/', 1)[0] + '/SHA256SUMS'
-    name = os.path.basename(urllib.parse.urlparse(config.PROXY_IMAGE_URL).path)
+    from . import settings
+    if settings.get('proxy_image_sha256'):
+        return settings.get('proxy_image_sha256').lower()
+    base = _image_url().rsplit('/', 1)[0] + '/SHA256SUMS'
+    name = os.path.basename(urllib.parse.urlparse(_image_url()).path)
     try:
         r = requests.get(base, timeout=30)
         if r.ok:
@@ -74,11 +83,13 @@ def _sha256(path, task=None):
 
 def ensure_image(task):
     """Path of the OVA to deploy, downloading and verifying it once."""
-    if config.PROXY_IMAGE:
-        if not os.path.exists(config.PROXY_IMAGE):
-            raise RuntimeError(f'HVB_PROXY_IMAGE {config.PROXY_IMAGE} does not exist')
-        task.log(f'using local image {config.PROXY_IMAGE}')
-        return config.PROXY_IMAGE
+    from . import settings
+    local = settings.get('proxy_image')
+    if local:
+        if not os.path.exists(local):
+            raise RuntimeError(f'the local proxy image {local} does not exist (Settings > Proxy image)')
+        task.log(f'using local image {local}')
+        return local
     path = _cache_path()
     with _image_lock:
         want = _expected_sha256(task)
@@ -89,9 +100,9 @@ def ensure_image(task):
             task.log('cached image does not match the published checksum; downloading again')
             os.unlink(path)
         os.makedirs(config.IMAGE_DIR, exist_ok=True)
-        task.log(f'downloading {config.PROXY_IMAGE_URL}')
+        task.log(f'downloading {_image_url()}')
         part = path + '.part'
-        with requests.get(config.PROXY_IMAGE_URL, stream=True, timeout=120) as r:
+        with requests.get(_image_url(), stream=True, timeout=120) as r:
             r.raise_for_status()
             total = int(r.headers.get('Content-Length') or 0)
             done = 0

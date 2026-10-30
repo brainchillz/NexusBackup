@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from .. import APP_VERSION, config, db
+from .. import APP_VERSION, db
 from ..core import auth, ops
 from ..providers import vsphere_plugin as vsp
 
@@ -62,7 +62,8 @@ def page(page: str):
         raise HTTPException(404)
     with open(os.path.join(STATIC, page + '.html')) as f:
         html = f.read()
-    return HTMLResponse(html.replace('__HVB_VERSION__', APP_VERSION).replace('__HVB_PUBLIC_URL__', config.PUBLIC_URL or ''))
+    from ..core import settings
+    return HTMLResponse(html.replace('__HVB_VERSION__', APP_VERSION).replace('__HVB_PUBLIC_URL__', settings.public_url()))
 
 
 @r.get('/vsphere-plugin/{asset}')

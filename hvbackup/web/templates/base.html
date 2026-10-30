@@ -50,6 +50,7 @@ window.THEMES = {{ themes | tojson }};
       <span class="badge plain">{{ user.role }}</span>
       <button class="linkbtn" id="logout">Sign out</button>
     </div>
+    <div class="notice" id="sys-notice" hidden></div>
     <div class="appearance" id="appearance">
       <button class="linkbtn" id="mode-toggle" title="Switch between dark and light">Light mode</button>
       <select id="theme-pick" title="Theme" hidden></select>
@@ -75,7 +76,13 @@ document.addEventListener('DOMContentLoaded', () => {
   pollWhile(async () => {
     try {
       const s = await api('GET', '/api/v1/status');
+      window.SERVER_TZ = s.timezone;
       strip.innerHTML = `<span class="${s.proxies_online ? 'ms-ok' : 'ms-bad'}">${s.proxies_online} prox${s.proxies_online === 1 ? 'y' : 'ies'}</span> · ${s.running_tasks} running · ${s.failed_runs_24h ? '<span class="ms-bad">' + s.failed_runs_24h + ' failed 24h</span>' : '<span class="ms-ok">no failures 24h</span>'} · repo ${esc(fmtBytes(s.repository.free_bytes))} free`;
+      const notes = [];
+      if (s.restart_pending) notes.push('Restart pending: the server exits when no task runs.');
+      else if (s.catalog_restore_pending) notes.push('A catalog restore is staged; <a href="/settings#catalog">restart to apply it</a>.');
+      if (s.update && s.update.available) notes.push(`<a href="${esc(s.update.url || '#')}" target="_blank" rel="noopener">Version ${esc(s.update.latest)} is available</a> (this server runs ${esc(s.version)}).`);
+      const n = document.getElementById('sys-notice'); n.hidden = !notes.length; n.innerHTML = notes.join('<br>');
     } catch (e) { strip.textContent = ''; }
     return true;
   }, 30000);

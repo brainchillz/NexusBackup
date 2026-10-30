@@ -31,7 +31,8 @@ def node_file(name: str):
 
 @r.get('/install.sh', include_in_schema=False)
 def install_script(request: Request):
-    base_url = (config.PUBLIC_URL or str(request.base_url)).rstrip('/')
+    from ..core import settings
+    base_url = settings.public_url(str(request.base_url))
     text = open(os.path.join(PVE_DIR, 'install.sh')).read().replace('__HVB_URL__', base_url)
     return PlainTextResponse(text, media_type='text/x-shellscript')
 

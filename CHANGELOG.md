@@ -26,7 +26,36 @@ SQLite copy), `secret.key` and the certificate into `<repository>/catalog/`
 upload or a repository copy, staged and applied at the next start with the
 old catalog kept as `catalog.db.before-restore`.
 
-**Server log in the UI**, the last 4000 lines with level and text filters;
+**Certificate manager.** Settings → Certificate shows the server certificate
+(names, issuer, expiry, SHA-256 fingerprint, whether the listener serves it
+yet), regenerates the self-signed pair with chosen names, imports a real
+certificate with key and chain (checked to match before anything is
+written), reverts to the previous pair, downloads the PEM for `HVB_CA`, and
+after the restart lists what pins it (Proxmox storages, vSphere plug-in
+registrations, proxies, dashboard plug-in) with a re-push button for each.
+`GET/POST /api/v1/certificate/...`. Proxies deployed after a real certificate
+is installed verify it. The sidebar warns 30 days before expiry.
+
+**Verification jobs.** A scheduled task (Sundays 04:00 by default) reads
+every chunk a restore point references, decompresses it and checks the
+BLAKE3 hash against the chunk's name; points not verified within seven days
+are taken, oldest first, shared chunks read once per run. Each point shows
+ok or damaged with the time in the restore point lists; damaged points raise
+a sidebar notice and a dashboard plug-in alert. **Verify…** on a point runs
+it now, optionally with a test boot: the point is restored isolated (NICs
+disconnected), powered on, the guest tools or agent awaited, then deleted.
+`POST /restore-points/{id}/verify`, `POST /maintenance/verify`,
+`hvbackup verify`.
+
+**Notifications.** One webhook (Settings → Notifications) with per-event
+switches: failed backups, damaged restore points, failed replication syncs,
+failed tasks. The JSON document carries `text`/`content` for Slack,
+Mattermost, Discord and Teams incoming webhooks and structured fields for
+everything else; an optional secret signs each request
+(`X-Hvbackup-Signature`). Delivery retries and never blocks the task. **Send
+a test** reports the answer.
+
+**Server log and audit log in the UI**, opened from Settings → Logs into a window-sized scrolling viewer, the server log with level and text filters;
 **Restart server** button (exits once no task runs; the shipped unit is now
 `Restart=always`, Compose already restarts); **update notice** in the sidebar
 from a daily release check (off with the setting); **themes uploaded as a

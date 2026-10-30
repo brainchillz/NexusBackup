@@ -33,7 +33,8 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTable(document.getElementById('rps'), [
       { h: 'ID', f: r => esc(r.id) }, { h: 'Created', f: r => esc(fmtTime(r.created)) }, { h: 'Kind', f: r => esc(r.kind) },
       { h: 'Size', f: r => esc(fmtBytes(r.size_bytes)), cls: 'num' }, { h: 'Allocated', f: r => esc(fmtBytes(r.allocated_bytes)), cls: 'num' },
-      { h: '', f: r => (can('restore') ? `<button class="btn sm" data-a="restore" data-id="${r.id}">Restore…</button> ` : '') + (can('operator') ? `<button class="btn sm danger" data-a="del" data-id="${r.id}">Delete</button>` : '') },
+      { h: 'Verified', f: r => verifyBadge(r) },
+      { h: '', f: r => (can('restore') ? `<button class="btn sm" data-a="restore" data-id="${r.id}">Restore…</button> ` : '') + (can('operator') ? `<button class="btn sm" data-a="verify" data-id="${r.id}">Verify…</button> <button class="btn sm danger" data-a="del" data-id="${r.id}">Delete</button>` : '') },
     ], v.restore_points, 'No restore points yet.');
     renderTable(document.getElementById('runs'), [
       { h: 'Started', f: r => esc(fmtTime(r.started)) }, { h: 'Duration', f: r => esc(dur(r.started, r.finished)) }, { h: 'Kind', f: r => esc(r.kind || '') },
@@ -48,6 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const b = e.target.closest('button[data-a]'); if (!b) return;
     const rp = v.restore_points.find(r => String(r.id) === b.dataset.id);
     if (b.dataset.a === 'restore') restoreDialog(rp, v.name, v.connection_id);
+    if (b.dataset.a === 'verify') verifyDialog({ ...rp, vm_name: v.name, connection_id: v.connection_id }, () => load());
     if (b.dataset.a === 'del') confirmModal('Delete restore point', `Delete restore point ${rp.id}? If it is the newest, the next backup is a full.`, async () => { await api('DELETE', `/api/v1/restore-points/${rp.id}`); load(); }, 'danger');
   });
 });

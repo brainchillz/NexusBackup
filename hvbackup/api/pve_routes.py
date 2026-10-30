@@ -241,6 +241,9 @@ async def backup_finish(run_id: int, request: Request, proxy=Depends(current_pro
         task.log(f'FAILED: {err}')
         with db.conn() as c:
             c.execute("UPDATE runs SET finished=?, status='failed', error=? WHERE id=? AND status='running'", (time.time(), err, run_id))
+            vm_name = (c.execute('SELECT v.name FROM runs r JOIN vms v ON v.id=r.vm_id WHERE r.id=?', (run_id,)).fetchone() or ['?'])[0]
+        from ..core import notify
+        notify.send('backup_failed', f'Backup of {vm_name} failed', err[:500], key=vm_name, vm=vm_name, run_id=run_id, task_id=run.get('task_id'))
         if external:
             tasks.finish_external(run['task_id'], 'failed', error=err)
         try:

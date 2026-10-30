@@ -173,11 +173,13 @@ so. `GET/PATCH /api/v1/settings` is the API.
 | Public URL | `HVB_URL` | empty | What browsers, proxies, Proxmox nodes and vCenter reach the server at, e.g. `https://backup.example.net:8460`. Proxies and node registrations pin it. |
 | Time zone | `TZ` | the host's | Cron schedules and the nightly maintenance hour run in this zone. |
 | Session lifetime | `HVB_SESSION_HOURS` | `12` | Hours a web sign-in lasts. |
-| Log level | `HVB_LOG_LEVEL` | `info` | `debug`, `info`, `warning`; applied at once. **Settings → Server log** shows the last 4000 lines. |
+| Log level | `HVB_LOG_LEVEL` | `info` | `debug`, `info`, `warning`; applied at once. **Settings → Logs → Server log** shows the last 4000 lines. |
 | Check for updates | `HVB_UPDATE_CHECK` | on | Daily release check against GitHub; a notice appears in the sidebar when the server is behind. |
 | Listen address, port | `HVB_BIND`, `HVB_PORT` | `0.0.0.0`, `8460` | Need a restart (button in Settings). |
 | Concurrency | `HVB_CONCURRENCY` | `2` | Backups, restores and replication syncs running at once per connection; the rest wait in their task. |
 | Catalog copy | `HVB_CATALOG_BACKUP`, `HVB_CATALOG_BACKUP_KEEP` | on, `7` | A daily archive of the catalog, `secret.key` and the certificate into `<repository>/catalog/`. |
+| Verification | `HVB_VERIFY`, `HVB_VERIFY_SCHEDULE`, `HVB_VERIFY_MAX_AGE_DAYS` | on, `0 4 * * 0`, `7` | Scheduled read of every chunk of every restore point not verified within N days; damaged points are flagged. |
+| Notifications | `HVB_WEBHOOK`, `HVB_WEBHOOK_URL`, `HVB_WEBHOOK_SECRET`, `HVB_NOTIFY_*` | off | One webhook, a JSON document per event (failed backup, damaged restore point, failed replication sync, failed task); Slack, Mattermost, Discord and Teams incoming webhooks render it as a message. |
 | Proxy image | `HVB_PROXY_IMAGE_URL`, `HVB_PROXY_IMAGE_SHA256`, `HVB_PROXY_IMAGE` | Ubuntu 24.04 | The cloud OVA proxies are built from, or a local file (upload one in Settings for offline sites). |
 
 Agent: `/etc/hvbackup/agent.conf` on each proxy VM.
@@ -192,9 +194,12 @@ Agent: `/etc/hvbackup/agent.conf` on each proxy VM.
 Client (CLI): `~/.config/hvbackup/client.conf` or environment, keys `HVB_URL`,
 `HVB_TOKEN`, `HVB_CA`, `HVB_INSECURE` (defaults to `1`).
 
-**TLS.** The server always speaks HTTPS. To use a real certificate, set
-`HVB_TLS_CERT` and `HVB_TLS_KEY` and restart; then proxies can drop
-`HVB_INSECURE` or set `HVB_CA`. Browsers also stop warning.
+**TLS.** The server always speaks HTTPS. **Settings → Certificate** shows the
+certificate, regenerates the self-signed pair, imports a real one (key and
+chain checked), reverts, and after the restart lists what pinned the old one
+with a re-push button for each; `HVB_TLS_CERT` and `HVB_TLS_KEY` do the same
+from the configuration and lock the page. With a real certificate proxies can
+drop `HVB_INSECURE` or set `HVB_CA`, and browsers stop warning.
 
 **Choosing the repository.** Any local filesystem works. ZFS or btrfs underneath
 adds checksumming and snapshots of the repository itself. It must be writable
@@ -250,6 +255,7 @@ before the subcommand for raw output.
 | `proxies list\|add\|deploy\|image\|delete` | Proxy VMs; `deploy` builds one from the cloud image, `add` prints the token and agent.conf for one you install yourself, `image` shows the cached image | `hvbackup proxies deploy proxy-cluster1 --connection prod --network "VM Network" --wait` |
 | `users list\|add\|passwd\|delete` | Local accounts; `--role` | `hvbackup users add alice --role operator` |
 | `tokens list\|add\|delete` | API tokens | `hvbackup tokens add ci` |
+| `verify [<rp>\|--all] [--test-boot]` | Read and hash every chunk of a restore point or of all; `--test-boot` restores one isolated, waits for the guest, deletes it | `hvbackup verify 42 --test-boot --wait` |
 | `settings list\|set KEY VALUE` | Runtime settings; `-` as the value clears to the default | `hvbackup settings set timezone Europe/Amsterdam` |
 | `logs`, `restart` | The in-memory server log; restart once no task runs | `hvbackup logs --level warning -n 50` |
 | `gc` | Garbage-collect unreferenced chunks now | `hvbackup gc` |

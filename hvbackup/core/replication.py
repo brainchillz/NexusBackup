@@ -232,6 +232,10 @@ def sync_one(task, repl, opts, vm_row, target_cr):
         with db.conn() as c:
             c.execute("UPDATE replicas SET state=CASE WHEN moref IS NULL THEN 'new' ELSE 'failed' END, last_error=? WHERE id=?", (err[:1000], replica['id']))
             c.execute('UPDATE runs SET finished=?, status=?, error=? WHERE id=?', (time.time(), 'cancelled' if err == 'cancelled' else 'failed', err[:1000], run_id))
+        if err != 'cancelled':
+            from . import notify
+            notify.send('replication_failed', f'Replication of {vm_row["name"]} to {target_cr["name"]} failed', err[:500], key=f'{vm_row["name"]}>{target_cr["name"]}',
+                        vm=vm_row['name'], target=target_cr['name'], replica=replica.get('name'), run_id=run_id, task_id=task.id)
         raise
 
 

@@ -81,6 +81,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const notes = [];
       if (s.restart_pending) notes.push('Restart pending: the server exits when no task runs.');
       else if (s.catalog_restore_pending) notes.push('A catalog restore is staged; <a href="/settings#catalog">restart to apply it</a>.');
+      if (s.damaged_points) notes.push(`<a href="/restore-points">${s.damaged_points} restore point${s.damaged_points === 1 ? '' : 's'} failed verification</a>.`);
+      if (s.certificate && s.certificate.restart_needed) notes.push('A new certificate is installed; <a href="/settings#certificate">restart to serve it</a>.');
+      if (s.certificate && s.certificate.days_left < 30) notes.push(`<a href="/settings#certificate">The server certificate expires in ${s.certificate.days_left} day${s.certificate.days_left === 1 ? '' : 's'}</a>.`);
       if (s.update && s.update.available) notes.push(`<a href="${esc(s.update.url || '#')}" target="_blank" rel="noopener">Version ${esc(s.update.latest)} is available</a> (this server runs ${esc(s.version)}).`);
       const n = document.getElementById('sys-notice'); n.hidden = !notes.length; n.innerHTML = notes.join('<br>');
     } catch (e) { strip.textContent = ''; }

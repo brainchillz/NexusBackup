@@ -346,7 +346,7 @@ def vm(vm_id: int, user=Depends(current_user)):
         v = db.row_to_dict(c.execute('SELECT * FROM vms WHERE id=?', (vm_id,)).fetchone())
         if not v:
             raise HTTPException(404)
-        v['restore_points'] = _rows(c, 'SELECT id,run_id,created,size_bytes,allocated_bytes,kind FROM restore_points WHERE vm_id=? AND deleted=0 ORDER BY id DESC', (vm_id,))
+        v['restore_points'] = _rows(c, 'SELECT id,run_id,created,size_bytes,allocated_bytes,kind,verified,verify_status,verify_error FROM restore_points WHERE vm_id=? AND deleted=0 ORDER BY id DESC', (vm_id,))
         v['runs'] = _rows(c, 'SELECT * FROM runs WHERE vm_id=? ORDER BY id DESC LIMIT 20', (vm_id,))
     return v
 
@@ -456,7 +456,7 @@ def runs(limit: int = 100, vm_id: Optional[int] = None, user=Depends(current_use
 
 @r.get('/restore-points')
 def restore_points(vm_id: Optional[int] = None, user=Depends(current_user)):
-    q = 'SELECT rp.id,rp.vm_id,rp.run_id,rp.created,rp.size_bytes,rp.allocated_bytes,rp.kind,rp.platform,rp.source_rp_id,v.name AS vm_name, v.connection_id FROM restore_points rp JOIN vms v ON v.id=rp.vm_id WHERE rp.deleted=0'
+    q = 'SELECT rp.id,rp.vm_id,rp.run_id,rp.created,rp.size_bytes,rp.allocated_bytes,rp.kind,rp.platform,rp.source_rp_id,rp.verified,rp.verify_status,rp.verify_error,v.name AS vm_name, v.connection_id FROM restore_points rp JOIN vms v ON v.id=rp.vm_id WHERE rp.deleted=0'
     args = []
     if vm_id:
         q += ' AND rp.vm_id=?'; args.append(vm_id)
@@ -533,6 +533,35 @@ class ConvertIn(BaseModel):
     new_identity: bool = True
     install_tools: bool = False
     name: Optional[str] = None
+
+
+class VerifyIn(BaseModel):
+    test_boot: bool = False
+    connection_id: Optional[int] = None
+
+
+@r.post('/restore-points/{rp_id}/verify')
+def verify_rp(rp_id: int, body: VerifyIn = VerifyIn(), user=Depends(require('operator'))):
+    """Read and hash every chunk of the point; with test_boot, also restore it isolated,
+    boot it, wait for the guest to report, and delete it again."""
+    with db.conn() as c:
+        rp = c.execute('SELECT rp.id, v.name FROM restore_points rp JOIN vms v ON v.id=rp.vm_id WHERE rp.id=? AND rp.deleted=0', (rp_id,)).fetchone()
+    if not rp:
+        raise HTTPException(404, 'restore point not found')
+    db.audit(user['username'], 'verify', f'restore point {rp_id} of {rp["name"]}' + (' with test boot' if body.test_boot else ''))
+    return {'task_id': tasks.create('verify', subject=f'{rp["name"]} #{rp_id}', created_by=user['username'], rp_ids=[rp_id],
+                                    test_boot=body.test_boot, connection_id=body.connection_id)}
+
+
+class VerifyAllIn(BaseModel):
+    max_age_days: Optional[int] = None  # null: every point, however recently verified
+
+
+@r.post('/maintenance/verify')
+def verify_all(body: VerifyAllIn = VerifyAllIn(), user=Depends(require('operator'))):
+    """Verify every restore point (or those not verified within max_age_days), like the scheduled run."""
+    db.audit(user['username'], 'verify', 'all restore points' if body.max_age_days is None else f'points older than {body.max_age_days} days')
+    return {'task_id': tasks.create('verify', subject='manual', created_by=user['username'], max_age_days=body.max_age_days)}
 
 
 @r.post('/restore-points/{rp_id}/convert')
@@ -914,11 +943,17 @@ def status(user=Depends(current_user)):
             'failed_runs_24h': f"SELECT COUNT(*) FROM runs WHERE status='failed' AND started>{time.time() - 86400}",
         }.items()}
         last_gc = c.execute("SELECT value FROM meta WHERE key='last_gc'").fetchone()
-    from ..core import catalog_backup, convert, server, updates
+    from ..core import catalog_backup, convert, server, tls, updates, verify
+    try:
+        ci = tls.info()
+        cert = {'days_left': ci['days_left'], 'restart_needed': ci['restart_needed'], 'self_signed': ci['self_signed']}
+    except (OSError, ValueError):
+        cert = None
     return {'version': APP_VERSION, 'repository': {'path': rep.path, 'id': rep.id, **rep.stats()},
             'proxies_online': len(ops.online_proxies()), 'last_gc': float(last_gc[0]) if last_gc else None,
             'conversion': convert.availability(), 'timezone': settings.get('timezone'), 'update': updates.status(),
-            'restart_pending': server.restart_pending(), 'catalog_restore_pending': catalog_backup.pending() is not None, **counts}
+            'restart_pending': server.restart_pending(), 'catalog_restore_pending': catalog_backup.pending() is not None,
+            'certificate': cert, **verify.summary(), **counts}
 
 
 @r.post('/maintenance/gc')
@@ -950,6 +985,21 @@ def patch_settings(body: Dict[str, Any], user=Depends(require('admin'))):
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {'settings': settings.describe(), 'restart_needed': restart}
+
+
+class WebhookTest(BaseModel):
+    url: Optional[str] = None     # try a URL before saving it; default: the saved one
+    secret: Optional[str] = None
+
+
+@r.post('/notifications/test')
+def notifications_test(body: WebhookTest = WebhookTest(), user=Depends(require('admin'))):
+    """Send a test document to the webhook now and report the answer."""
+    from ..core import notify
+    try:
+        return notify.test(body.url or None, body.secret)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @r.get('/settings/timezones')
@@ -1048,6 +1098,67 @@ def catalog_restore_discard(user=Depends(require('admin'))):
     catalog_backup.discard_pending()
     db.audit(user['username'], 'catalog_restore_discarded')
     return {'ok': True}
+
+
+# ── certificate ──────────────────────────────────────────────────────
+class CertRegenerate(BaseModel):
+    names: list = []
+    days: int = 3650
+
+
+class CertImport(BaseModel):
+    cert: str
+    key: str
+    chain: str = ''
+
+
+@r.get('/certificate')
+def certificate(user=Depends(require('admin'))):
+    """The server certificate, where it comes from, whether a restart is needed to serve it,
+    and what pins it (Proxmox storages, vSphere plug-in registrations, proxies)."""
+    from ..core import tls
+    return {**tls.info(), 'pins': tls.pins()}
+
+
+@r.post('/certificate/regenerate')
+def certificate_regenerate(body: CertRegenerate = CertRegenerate(), user=Depends(require('admin'))):
+    from ..core import tls
+    try:
+        info = tls.regenerate(body.names, body.days)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.audit(user['username'], 'certificate_regenerated', ', '.join(info['names']))
+    return info
+
+
+@r.post('/certificate/import')
+def certificate_import(body: CertImport, user=Depends(require('admin'))):
+    from ..core import tls
+    try:
+        info = tls.import_pem(body.cert, body.key, body.chain)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.audit(user['username'], 'certificate_imported', f"{info['subject']} ({info['fingerprint'][:23]}...)")
+    return info
+
+
+@r.post('/certificate/revert')
+def certificate_revert(user=Depends(require('admin'))):
+    from ..core import tls
+    try:
+        info = tls.revert()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.audit(user['username'], 'certificate_reverted', info['fingerprint'][:23])
+    return info
+
+
+@r.get('/certificate/download')
+def certificate_download(user=Depends(current_user)):
+    """The certificate PEM (with its chain), for HVB_CA on proxies and clients."""
+    from fastapi.responses import FileResponse
+    from ..core import tls
+    return FileResponse(tls.paths()[0], media_type='application/x-pem-file', filename='hvbackup-server.crt')
 
 
 # ── themes ───────────────────────────────────────────────────────────

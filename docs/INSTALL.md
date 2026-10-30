@@ -236,8 +236,36 @@ The unit runs with `ProtectSystem=full`, which makes `/usr`, `/boot` and
 ### 4.6 Certificate
 
 The server generates a self-signed certificate on first start in
-`/var/lib/hvbackup/certs`. To use your own, point the configuration at a PEM
-pair the `hvbackup` user can read and restart:
+`/var/lib/hvbackup/certs`. **Settings → Certificate** shows it (names,
+issuer, expiry, SHA-256 fingerprint, whether the listener already serves it),
+regenerates the self-signed pair with the names you choose, imports a real
+certificate with its key and chain (PEM, checked to match before anything is
+written), and reverts to the previous pair. A new certificate is served
+after **Restart to apply**; the page then lists what pinned the old one
+(Proxmox storages, vSphere plug-in registrations, proxies, the dashboard
+plug-in) with a re-push button for each. **Download** gives the certificate
+for `HVB_CA` on proxies and clients. The sidebar warns 30 days before expiry.
+
+A reverse proxy in front of the server is the alternative for browsers:
+Caddy or nginx on the same host with a real certificate for a friendly name,
+forwarding to `https://127.0.0.1:8460` and trusting the self-signed
+certificate upstream. Proxies, nodes and vCenter keep using the :8460 door
+and the public URL, which stays the :8460 form; only people use the front
+door. Caddy example:
+
+```
+backup.example.net {
+    reverse_proxy https://127.0.0.1:8460 {
+        transport http {
+            tls_server_name backup-server.internal
+            tls_trusted_ca_certs /etc/caddy/certs/hvbackup-server.crt   # the Download from Settings > Certificate
+        }
+    }
+}
+```
+
+Without the UI, point the configuration at a PEM pair the `hvbackup` user
+can read and restart (the fields in Settings then show as locked):
 
 ```bash
 sudo install -d -m 750 -g hvbackup /etc/hvbackup/tls
@@ -247,11 +275,13 @@ sudo sed -i 's|^HVB_TLS_CERT=.*|HVB_TLS_CERT=/etc/hvbackup/tls/cert.pem|; s|^HVB
 sudo systemctl restart hvbackup
 ```
 
-`HVB_URL` must match the certificate's name. After the change, re-run
-**Register storage** for each Proxmox cluster: the nodes pin the server's
-certificate fingerprint. Proxies deployed while the server was self-signed run
-with `HVB_INSECURE=1` and keep working; proxies deployed afterwards verify the
-certificate. Hand-installed proxies follow their `agent.conf`.
+The public URL must match the certificate's name. After the change, re-run
+**Register storage** for each Proxmox cluster (the nodes pin the server's
+certificate fingerprint) and **Update plug-in registration** for each
+vCenter; both buttons are on the certificate page. Proxies deployed while
+the server was self-signed run with `HVB_INSECURE=1` and keep working;
+proxies deployed afterwards verify the certificate. Hand-installed proxies
+follow their `agent.conf`.
 
 ### 4.7 Firewall
 
@@ -335,7 +365,7 @@ sudo ./packaging/get.sh --docker --repo /srv/hvbackup --url https://backup.examp
 | Stop | `docker compose down` (data and repository stay) |
 | Back up the catalog | **Settings → Catalog → Download a backup now**, or rely on the daily copy in `<repository>/catalog/`; by hand: `docker run --rm -v nexusbackup_hvbackup-data:/d -v "$PWD":/b alpine tar czf /b/hvbackup-data.tgz -C /d .` |
 | Restore the catalog | **Settings → Catalog**: upload an archive or pick a repository copy, then **Restart now**; the old catalog stays as `catalog.db.before-restore` |
-| Logs in the UI | **Settings → Server log** (last 4000 lines, filter, level switch) |
+| Logs in the UI | **Settings → Logs → Server log** (last 4000 lines, filter, level switch) and **Audit log** |
 | Restart | **Settings → Server → Restart server** (waits for running tasks), or `docker compose restart` |
 
 The volume name is prefixed with the Compose project name, the directory name
@@ -553,7 +583,8 @@ automatically on start.
 - The repository on checksumming storage, monitored for free space (the dashboard tile and `hvbackup status --tsv` report it).
 - The daily catalog copy into the repository left on (**Settings → Catalog**), and one downloaded archive kept off the server.
 - Nightly jobs with retention set; garbage collection runs by itself after retention deletes points.
-- A restore tested once, onto a scratch network.
+- A restore tested once, onto a scratch network, and scheduled verification left on (**Settings → Verification**; a **Verify…** with test boot on one restore point proves the backup boots).
+- A webhook in **Settings → Notifications** so failed backups, damaged restore points and failed syncs reach someone.
 - Monitoring: `hvbackup status --tsv` for scripts, the Nexus Dashboard plug-in, or the `failed_runs_24h` field of `GET /api/v1/status`.
 
 ## 13. Troubleshooting the install

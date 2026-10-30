@@ -5,6 +5,16 @@
 <div class="toolbar" style="margin-top:10px"><button class="btn primary" id="save-settings">Save</button><button class="btn" id="restart">Restart server</button><span class="muted" id="settings-note"></span></div></div>
 <div class="card"><h2>Repository</h2><dl class="kv" id="repo"></dl><div class="toolbar" style="margin-top:10px"><button class="btn" id="gc" hidden>Run garbage collection</button><a class="btn" href="/api/docs" target="_blank">API documentation</a></div></div>
 <div class="card"><h2>API tokens</h2><p class="muted">Tokens act with the owner's role. Send them as <span class="mono">Authorization: Bearer hvb_…</span>; the CLI reads <span class="mono">HVB_TOKEN</span>.</p><div class="toolbar"><button class="btn primary" id="newtoken">New token</button></div><div id="tokens"></div></div>
+<div class="card" id="verifycard" hidden><h2>Verification</h2><p class="muted">Reads the chunks of every restore point on a schedule and checks each against its hash, so damage on the repository disk shows up before a restore needs the data. Damaged points are flagged in the restore point lists and in the dashboard plug-in.</p>
+<form class="settings-grid" data-section="verify" id="verify-form"></form>
+<div class="toolbar" style="margin-top:10px"><button class="btn primary" data-save>Save</button><button class="btn" id="verify-now">Verify everything now</button><span class="muted" id="verify-note"></span></div></div>
+<div class="card" id="notifycard" hidden><h2>Notifications</h2><p class="muted">One webhook, a JSON document per event. Tick the events to send.</p>
+<form class="settings-grid" data-section="notify" id="notify-form"></form>
+<div class="toolbar" style="margin-top:10px"><button class="btn primary" data-save>Save</button><button class="btn" id="webhook-test">Send a test</button><span class="muted">The test uses the URL and secret in the fields above, saved or not.</span></div></div>
+<div class="card" id="certcard" hidden><a id="certificate"></a><h2>Certificate</h2><p class="muted">The HTTPS certificate of this server. A new one is served after a restart; the list below says what pins the current one and offers the re-push.</p>
+<dl class="kv" id="cert"></dl>
+<div class="toolbar" style="margin-top:10px"><button class="btn" id="cert-regen">Regenerate self-signed…</button><button class="btn" id="cert-import">Import certificate…</button><a class="btn" href="/api/v1/certificate/download" download>Download</a><button class="btn" id="cert-revert" hidden>Revert to the previous</button><button class="btn danger" id="cert-restart" hidden>Restart to apply</button></div>
+<div id="cert-pins"></div></div>
 <div class="card" id="catalogcard" hidden><a id="catalog"></a><h2>Catalog</h2><p class="muted">The catalog (what was backed up, where, by whom), the secret key that unlocks the stored hypervisor credentials and the server certificate. The repository holds the data; with one of these archives it rebuilds a dead server.</p>
 <form class="settings-grid" data-section="catalog" id="catalog-form"></form>
 <div class="toolbar" style="margin-top:10px"><a class="btn" href="/api/v1/catalog/backup" download>Download a backup now</a><button class="btn" id="catalog-copy">Copy into the repository now</button><button class="btn" id="catalog-upload">Restore from an archive…</button><span class="muted" id="catalog-note"></span></div>
@@ -15,15 +25,14 @@
 <div class="toolbar" style="margin-top:10px"><button class="btn" id="image-upload">Upload an OVA…</button><button class="btn danger" id="image-forget" hidden>Forget the local image</button><span class="muted" id="image-note"></span></div></div>
 <div class="card" id="themescard" hidden><h2>Themes</h2><p class="muted">Theme drop-ins (Nexus Dashboard's contract: <span class="mono">theme.json</span>, <span class="mono">theme.css</span>, optional <span class="mono">theme.js</span>) as a zip. Everyone picks a theme in the sidebar.</p>
 <div class="toolbar"><button class="btn" id="theme-upload">Upload a theme…</button></div><div id="themes"></div></div>
-<div class="card" id="logscard" hidden><h2>Server log</h2><div class="toolbar"><select id="log-level"><option value="debug">debug and up</option><option value="info" selected>info and up</option><option value="warning">warnings and errors</option></select><input id="log-q" placeholder="filter" style="max-width:220px"><label class="c"><input type="checkbox" id="log-follow" checked> follow</label><span class="spacer"></span><span class="muted">last 4000 lines, kept in memory; the full log is on stdout (journal or container log)</span></div><pre class="logbox" id="logbox"></pre></div>
+<div class="card" id="logscard" hidden><h2>Logs</h2><div class="toolbar"><button class="btn" id="open-log">Server log</button><button class="btn" id="open-audit">Audit log</button><span class="muted">The server log is the last 4000 lines kept in memory (the full log is on stdout: journal or container log); the audit log records who changed what.</span></div></div>
 <div class="card" id="userscard" hidden><h2>Users</h2><div class="toolbar"><button class="btn primary" id="newuser">Add user</button></div><div id="users"></div></div>
-<div class="card" id="auditcard" hidden><h2>Audit log</h2><div id="audit"></div></div>
 {% endblock %}
 {% block script %}
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const admin = can('admin');
-  document.getElementById('gc').hidden = !admin; document.getElementById('userscard').hidden = !admin; document.getElementById('auditcard').hidden = !admin;
+  document.getElementById('gc').hidden = !admin; document.getElementById('userscard').hidden = !admin;
   async function loadRepo() {
     const st = await api('GET', '/api/v1/status');
     const r = st.repository;
@@ -44,9 +53,6 @@ document.addEventListener('DOMContentLoaded', () => {
       { h: 'Username', f: u => esc(u.username) }, { h: 'Role', f: u => badge(u.role, u.role === 'admin' ? 'info' : '') }, { h: 'Created', f: u => esc(fmtTime(u.created)) },
       { h: '', f: u => `<button class="btn sm" data-a="role" data-u="${esc(u.username)}" data-role="${esc(u.role)}">Role</button> <button class="btn sm" data-a="pw" data-u="${esc(u.username)}">Password</button> <button class="btn sm danger" data-a="deluser" data-u="${esc(u.username)}">Delete</button>` },
     ], await api('GET', '/api/v1/users'));
-    renderTable(document.getElementById('audit'), [
-      { h: 'Time', f: a => esc(fmtTime(a.ts)) }, { h: 'User', f: a => esc(a.user || '') }, { h: 'Action', f: a => esc(a.action) }, { h: 'Detail', f: a => esc(a.detail || '') },
-    ], await api('GET', '/api/v1/audit?limit=100'), 'Nothing logged yet.');
   }
   // ── runtime settings ──
   let SPEC = [];
@@ -56,7 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (sp.kind === 'bool') input = `<label class="c"><input type="checkbox" name="${sp.key}" ${sp.value ? 'checked' : ''} ${sp.locked ? 'disabled' : ''}> ${esc(sp.label)}${lock}</label>`;
     else if (sp.kind === 'choice') input = `<label class="f"><span>${esc(sp.label)}${lock}</span><select name="${sp.key}" ${sp.locked ? 'disabled' : ''}>${sp.choices.map(c => `<option ${c === sp.value ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`;
     else if (sp.kind === 'timezone') input = `<label class="f"><span>${esc(sp.label)}${lock}</span><input name="${sp.key}" value="${esc(sp.value)}" list="tzlist" ${sp.locked ? 'disabled' : ''}></label>`;
-    else input = `<label class="f"><span>${esc(sp.label)}${lock}${sp.restart ? ' <span class="badge plain">restart</span>' : ''}</span><input name="${sp.key}" value="${esc(sp.value)}" ${sp.kind === 'int' ? 'type="number"' : ''} ${sp.locked ? 'disabled' : ''} placeholder="${esc(sp.default)}"></label>`;
+    else input = `<label class="f"><span>${esc(sp.label)}${lock}${sp.restart ? ' <span class="badge plain">restart</span>' : ''}</span><input name="${sp.key}" value="${esc(sp.value)}" ${sp.kind === 'int' ? 'type="number"' : sp.kind === 'secret' ? 'type="password" autocomplete="new-password"' : ''} ${sp.locked ? 'disabled' : ''} placeholder="${esc(sp.default)}"></label>`;
     return `<div class="setting" id="${id}">${input}<div class="muted help">${esc(sp.help || '')}</div></div>`;
   }
   async function loadSettings() {
@@ -73,6 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (sp.locked) continue;
       const el = document.querySelector(`[name="${sp.key}"]`); if (!el) continue;
       const v = el.type === 'checkbox' ? el.checked : el.value;
+      if (sp.kind === 'secret' && /^•+$/.test(v)) continue;
       if (String(v) !== String(sp.value)) changes[sp.key] = v === '' ? null : v;
     }
     if (!Object.keys(changes).length) { toast('Nothing changed'); return; }
@@ -81,8 +88,50 @@ document.addEventListener('DOMContentLoaded', () => {
     await loadSettings(); loadImage();
   }
   document.getElementById('save-settings').onclick = e => { e.preventDefault(); saveSettings().catch(err => toast(err.message)); };
+  document.querySelectorAll('button[data-save]').forEach(b => b.onclick = e => { e.preventDefault(); saveSettings().catch(err => toast(err.message)); });
+  document.getElementById('webhook-test').onclick = async () => {
+    const url = (document.querySelector('[name=webhook_url]') || {}).value, secretEl = document.querySelector('[name=webhook_secret]');
+    const secret = secretEl && secretEl.value && !/^•+$/.test(secretEl.value) ? secretEl.value : null;
+    try { await api('POST', '/api/v1/notifications/test', { url: url || null, secret }); toast('Test delivered'); } catch (e) { toast(e.message, 6000); }
+  };
+  document.getElementById('verify-now').onclick = () => confirmModal('Verify everything now', 'Read every chunk of every restore point, however recently it was verified. On a large repository this takes a while and competes with backups for disk reads.', async () => startedTask(await api('POST', '/api/v1/maintenance/verify', {}), 'Verification started'));
+  async function loadVerifyNote() {
+    if (!admin) return;
+    const s = await api('GET', '/api/v1/status');
+    document.getElementById('verify-note').innerHTML = `${s.damaged_points ? badge(s.damaged_points + ' damaged', 'bad') + ' ' : ''}${s.unverified_points} never verified · last run ${s.last_verify ? esc(ago(s.last_verify)) : 'never'} · next ${s.next_verify ? esc(fmtTime(s.next_verify)) : 'not scheduled'}`;
+  }
   document.querySelectorAll('form.settings-grid').forEach(f => f.onsubmit = e => { e.preventDefault(); saveSettings().catch(err => toast(err.message)); });
   document.getElementById('restart').onclick = () => confirmModal('Restart server', 'The server exits as soon as no task is running (10 minutes at most) and the service manager starts it again. Browsers reconnect by themselves.', async () => { await api('POST', '/api/v1/server/restart?reason=settings'); loadSettings(); }, 'danger');
+
+  // ── certificate ──
+  async function loadCert() {
+    if (!admin) return;
+    const c = await api('GET', '/api/v1/certificate');
+    const warn = c.days_left < 30 ? ` ${badge(c.days_left < 0 ? 'expired' : 'expires in ' + c.days_left + ' days', 'bad')}` : '';
+    document.getElementById('cert').innerHTML = [
+      ['Subject', esc(c.subject)], ['Names', esc(c.names.join(', ')) || '<span class="muted">none</span>'], ['Issuer', esc(c.issuer) + (c.self_signed ? ' ' + badge('self-signed', 'plain') : '') + (c.chain.length ? ` <span class="muted">+ ${c.chain.length} in chain</span>` : '')],
+      ['Valid', `${esc(fmtTime(c.not_before))} to ${esc(fmtTime(c.not_after))}${warn}`], ['SHA-256 fingerprint', `<span class="mono">${esc(c.fingerprint)}</span>`],
+      ['Source', c.managed_outside ? `files named by HVB_TLS_CERT / HVB_TLS_KEY (${esc(c.path)}); manage them there` : `${esc(c.origin)}, ${esc(c.path)}`],
+      ['Served', c.restart_needed ? badge('restart needed', 'bad') + ' the listener still serves the previous certificate' : (c.running_fingerprint ? badge('this certificate', 'ok') : '<span class="muted">unknown</span>')],
+    ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    document.getElementById('cert-regen').hidden = c.managed_outside; document.getElementById('cert-import').hidden = c.managed_outside;
+    document.getElementById('cert-revert').hidden = !c.previous_available; document.getElementById('cert-restart').hidden = !c.restart_needed;
+    renderTable(document.getElementById('cert-pins'), [
+      { h: 'Pinned by', f: p => esc(p.connection ? `${p.connection} (${p.kind === 'pve_storage' ? 'Proxmox storage ' + (p.storage || '') : 'vSphere plug-in'})` : p.kind === 'proxies' ? 'Proxy agents' : 'Dashboard plug-in and CLI') },
+      { h: 'What happens after a change', f: p => esc(p.what) },
+      { h: '', f: p => p.action === 'pve-storage' ? `<button class="btn sm" data-a="repush-pve" data-cid="${p.connection_id}" ${c.restart_needed ? 'disabled title="restart first: the nodes would pin a certificate the server does not serve yet"' : ''}>Re-register storage</button>`
+        : p.action === 'vsphere-plugin' ? `<button class="btn sm" data-a="repush-vsp" data-cid="${p.connection_id}" ${c.restart_needed ? 'disabled title="restart first"' : ''}>Update plug-in registration</button>` : '' },
+    ], c.pins, 'Nothing pins the certificate yet.');
+  }
+  document.getElementById('cert-regen').onclick = async () => {
+    const c = await api('GET', '/api/v1/certificate');
+    modal({ title: 'Regenerate the self-signed certificate', body: `<p class="muted">A new key pair and certificate with these names (DNS names or IP addresses, one per line). The public URL's host must be among them.</p><label class="f"><span>Names</span><textarea name="names" rows="5">${esc(c.names.join('\n'))}</textarea></label><label class="f"><span>Valid for (days)</span><input name="days" type="number" value="3650" min="1" max="3650"></label>`,
+      buttons: [{ label: 'Cancel' }, { label: 'Regenerate', cls: 'danger', onClick: async m => { await api('POST', '/api/v1/certificate/regenerate', { names: val(m, 'names').split(/\s+/).filter(Boolean), days: Number(val(m, 'days')) }); toast('Certificate regenerated; restart to serve it'); loadCert(); } }] });
+  };
+  document.getElementById('cert-import').onclick = () => modal({ title: 'Import a certificate', body: `<p class="muted">PEM text. The key must be unencrypted and match the certificate; intermediates may be appended to the certificate or pasted in the chain box.</p><label class="f"><span>Certificate</span><textarea name="cert" rows="6" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label><label class="f"><span>Private key</span><textarea name="key" rows="4" placeholder="-----BEGIN PRIVATE KEY-----"></textarea></label><label class="f"><span>Chain (optional)</span><textarea name="chain" rows="3"></textarea></label>`,
+    buttons: [{ label: 'Cancel' }, { label: 'Import', cls: 'primary', onClick: async m => { await api('POST', '/api/v1/certificate/import', { cert: val(m, 'cert'), key: val(m, 'key'), chain: val(m, 'chain') }); toast('Certificate imported; restart to serve it'); loadCert(); } }] });
+  document.getElementById('cert-revert').onclick = () => confirmModal('Revert to the previous certificate', 'The previous key pair comes back; restart to serve it.', async () => { await api('POST', '/api/v1/certificate/revert'); loadCert(); }, 'danger');
+  document.getElementById('cert-restart').onclick = () => confirmModal('Restart server', 'The server exits as soon as no task is running and comes back serving the new certificate. Then re-push to whatever pins it (list below).', async () => { await api('POST', '/api/v1/server/restart?reason=certificate'); loadSettings(); }, 'danger');
 
   // ── catalog ──
   async function loadCatalog() {
@@ -130,29 +179,46 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   document.getElementById('theme-upload').onclick = () => uploadModal('Upload a theme', 'A zip holding theme.json and theme.css (and theme.js, fonts, images) at its root or in one directory.', '.zip', '/api/v1/themes', t => { toast(`Theme ${t.name} installed; reload to pick it`); loadThemes(); });
 
-  // ── logs ──
-  let lastLog = null;
-  const box = document.getElementById('logbox');
-  async function loadLogs(reset) {
-    if (!admin) return;
-    if (reset) { lastLog = null; box.textContent = ''; }
-    const q = new URLSearchParams({ limit: 400, level: document.getElementById('log-level').value });
-    const f = document.getElementById('log-q').value.trim(); if (f) q.set('q', f);
-    if (lastLog) q.set('after', lastLog);
-    const rows = await api('GET', '/api/v1/logs?' + q);
-    if (!rows.length) return;
-    const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
-    box.textContent += rows.map(l => `${new Date(l.ts * 1000).toLocaleTimeString()} ${l.level.toUpperCase().padEnd(7)} ${l.logger}: ${l.message}\n`).join('');
-    lastLog = rows[rows.length - 1].id;
-    const lines = box.textContent.split('\n'); if (lines.length > 4000) box.textContent = lines.slice(-4000).join('\n');
-    if (atEnd || document.getElementById('log-follow').checked) box.scrollTop = box.scrollHeight;
-  }
-  document.getElementById('log-level').onchange = () => loadLogs(true);
-  document.getElementById('log-q').oninput = () => loadLogs(true);
-  if (admin) pollWhile(async () => { if (document.getElementById('log-follow').checked) await loadLogs(); return true; }, 3000);
+  // ── logs: viewers open in a window-sized modal, the page itself stays short ──
+  document.getElementById('open-log').onclick = () => {
+    const m = modal({ title: 'Server log', body: `<div class="toolbar"><select id="log-level"><option value="debug">debug and up</option><option value="info" selected>info and up</option><option value="warning">warnings and errors</option></select><input id="log-q" placeholder="filter" style="max-width:220px"><label class="c"><input type="checkbox" id="log-follow" checked> follow</label></div><pre class="logbox" id="logbox"></pre>`, buttons: [{ label: 'Close' }] });
+    m.querySelector('.modal').classList.add('wide');
+    const box = m.querySelector('#logbox'); let lastLog = null;
+    async function loadLogs(reset) {
+      if (!document.body.contains(m)) return false;
+      if (reset) { lastLog = null; box.textContent = ''; }
+      const q = new URLSearchParams({ limit: 400, level: m.querySelector('#log-level').value });
+      const f = m.querySelector('#log-q').value.trim(); if (f) q.set('q', f);
+      if (lastLog) q.set('after', lastLog);
+      const rows = await api('GET', '/api/v1/logs?' + q);
+      if (!rows.length) return true;
+      const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+      box.textContent += rows.map(l => `${new Date(l.ts * 1000).toLocaleTimeString()} ${l.level.toUpperCase().padEnd(7)} ${l.logger}: ${l.message}\n`).join('');
+      lastLog = rows[rows.length - 1].id;
+      const lines = box.textContent.split('\n'); if (lines.length > 4000) box.textContent = lines.slice(-4000).join('\n');
+      if (atEnd || m.querySelector('#log-follow').checked) box.scrollTop = box.scrollHeight;
+      return true;
+    }
+    m.querySelector('#log-level').onchange = () => loadLogs(true);
+    m.querySelector('#log-q').oninput = () => loadLogs(true);
+    loadLogs(true);
+    pollWhile(async () => (m.querySelector('#log-follow') && m.querySelector('#log-follow').checked ? loadLogs() : document.body.contains(m)), 3000);
+  };
+  document.getElementById('open-audit').onclick = async () => {
+    const m = modal({ title: 'Audit log', body: `<div class="toolbar"><input id="audit-q" placeholder="filter" style="max-width:220px"><span class="muted">last 500 entries</span></div><div class="logbox" id="auditbox"></div>`, buttons: [{ label: 'Close' }] });
+    m.querySelector('.modal').classList.add('wide');
+    const rows = await api('GET', '/api/v1/audit?limit=500');
+    const render = () => {
+      const f = m.querySelector('#audit-q').value.trim().toLowerCase();
+      renderTable(m.querySelector('#auditbox'), [
+        { h: 'Time', f: a => esc(fmtTime(a.ts)) }, { h: 'User', f: a => esc(a.user || '') }, { h: 'Action', f: a => esc(a.action) }, { h: 'Detail', f: a => esc(a.detail || '') },
+      ], rows.filter(a => !f || [a.user, a.action, a.detail].join(' ').toLowerCase().includes(f)), 'Nothing logged yet.');
+    };
+    m.querySelector('#audit-q').oninput = render; render();
+  };
 
-  for (const id of ['servercard', 'catalogcard', 'proxyimagecard', 'themescard', 'logscard']) document.getElementById(id).hidden = !admin;
-  loadRepo(); loadTokens(); loadUsers(); loadSettings(); loadCatalog(); loadImage(); loadThemes(); loadLogs(true);
+  for (const id of ['servercard', 'verifycard', 'notifycard', 'certcard', 'catalogcard', 'proxyimagecard', 'themescard', 'logscard']) document.getElementById(id).hidden = !admin;
+  loadRepo(); loadTokens(); loadUsers(); loadSettings(); loadVerifyNote(); loadCert(); loadCatalog(); loadImage(); loadThemes();
   document.getElementById('gc').onclick = () => confirmModal('Run garbage collection', 'Remove chunks no restore point references. Chunks written in the last hour are kept.', async () => startedTask(await api('POST', '/api/v1/maintenance/gc'), 'GC started'));
   document.getElementById('newtoken').onclick = () => modal({ title: 'New API token', body: `<label class="f"><span>Name</span><input name="name" placeholder="cli on my laptop"></label>${admin ? '<label class="f"><span>For user (blank = me)</span><input name="username"></label>' : ''}`,
     buttons: [{ label: 'Cancel' }, { label: 'Create', cls: 'primary', onClick: async m => {
@@ -167,6 +233,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.body.addEventListener('click', async e => {
     const b = e.target.closest('button[data-a],button#restore-apply,button#restore-discard'); if (!b) return;
     const a = b.dataset.a, u = b.dataset.u;
+    if (a === 'repush-pve') confirmModal('Re-register storage', 'Re-key the hvbackup storage on this cluster with the current certificate fingerprint. Running Proxmox backups are not affected.', async () => { const r = await api('POST', `/api/v1/connections/${b.dataset.cid}/pve-storage`, {}); toast('Storage registered, fingerprint ' + (r.fingerprint || '').slice(0, 23) + '…'); });
+    if (a === 'repush-vsp') confirmModal('Update plug-in registration', 'Update the vSphere Client plug-in registration on this vCenter with the current certificate thumbprint.', async () => { await api('POST', `/api/v1/connections/${b.dataset.cid}/vsphere-plugin`, { action: 'update' }); toast('Plug-in registration updated'); });
     if (a === 'restore-copy') confirmModal('Restore from this copy', `Stage ${b.dataset.name} as the catalog. Nothing changes until the server restarts.`, async () => { const d = await api('POST', `/api/v1/catalog/restore?name=${encodeURIComponent(b.dataset.name)}`); toast(`Staged: ${d.users} users, ${d.vms} VMs, ${d.restore_points} restore points`); loadCatalog(); });
     if (a === 'del-copy') confirmModal('Delete copy', `Delete ${b.dataset.name} from the repository?`, async () => { await api('DELETE', `/api/v1/catalog/backups/${encodeURIComponent(b.dataset.name)}`); loadCatalog(); }, 'danger');
     if (a === 'deltheme') confirmModal('Delete theme', `Delete theme "${b.dataset.id}"? Browsers using it fall back to the built-in look.`, async () => { await api('DELETE', `/api/v1/themes/${encodeURIComponent(b.dataset.id)}`); loadThemes(); }, 'danger');

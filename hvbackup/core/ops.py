@@ -381,6 +381,9 @@ def _backup_one(task, api, cr, vm_row, job):
                 pass
         with db.conn() as c:
             c.execute('UPDATE runs SET finished=?, status=?, error=? WHERE id=?', (time.time(), 'failed', f'{type(e).__name__}: {e}'[:1000], run_id))
+        from . import notify
+        notify.send('backup_failed', f'Backup of {vm_row["name"]} failed', f'{type(e).__name__}: {e}'[:500], key=vm_row['name'],
+                    vm=vm_row['name'], connection=cr['name'], run_id=run_id, task_id=task.id)
         return {'vm': vm_row['name'], 'status': 'failed', 'error': str(e)}
 
 
@@ -443,10 +446,11 @@ def gc(task, grace_seconds=3600):
 def maybe_gc():
     """Called by the scheduler loop: run GC once a day at ~03:00 in the configured zone, and
     the other daily chores (catalog copy, update check) alongside."""
-    from . import catalog_backup, updates
+    from . import catalog_backup, updates, verify
     try:
         catalog_backup.maybe_copy()
         updates.check()
+        verify.maybe_schedule()
     except Exception:  # noqa: BLE001
         log.exception('daily chores failed')
     with db.conn() as c:
@@ -516,6 +520,8 @@ def register_tasks():
     tasks.register('convert', convert.convert_task)
     from . import replication
     tasks.register('replicate', replication.replicate_task)
+    from . import verify
+    tasks.register('verify', verify.verify_task)
 
 
 def scheduler_run_job(job_id, created_by):

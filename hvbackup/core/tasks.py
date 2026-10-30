@@ -122,7 +122,14 @@ def start(task_id, kind, params):
         with db.conn() as c:
             c.execute('UPDATE tasks SET state=?, finished=?, message=COALESCE(?,message), result_json=?, progress=CASE WHEN ?="done" THEN 1 ELSE progress END WHERE id=?',
                       (state, time.time(), err, json.dumps({'params': params, 'result': result}, default=str), state, task_id))
+            subject = c.execute('SELECT subject FROM tasks WHERE id=?', (task_id,)).fetchone()[0]
         _threads.pop(task_id, None)
+        if state == 'failed':
+            try:
+                from . import notify
+                notify.send('task_failed', f'Task {task_id} ({kind}{", " + subject if subject else ""}) failed', err[:500], key=f'{kind}:{subject}', task_id=task_id, kind=kind, subject=subject)
+            except Exception:  # noqa: BLE001
+                log.exception('notification failed')
 
     th = threading.Thread(target=run, name=f'task-{task_id}', daemon=True)
     _threads[task_id] = th

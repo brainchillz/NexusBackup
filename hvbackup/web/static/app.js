@@ -482,3 +482,23 @@ async function replicationDialog(rep) {
   drawVms();
   await loadPlacement();
 }
+
+/* Verification state of a restore point, and the dialog that starts a verification. */
+function verifyBadge(r) {
+  if (!r.verified) return '<span class="muted">never</span>';
+  const when = `<span class="muted" title="${esc(fmtTime(r.verified))}">${esc(ago(r.verified))}</span>`;
+  if (r.verify_status === 'ok') return `<span title="${esc(r.verify_error || '')}">${badge('ok', 'ok')}</span> ${when}`;
+  return `<span title="${esc(r.verify_error || '')}">${badge('damaged', 'bad')}</span> ${when}`;
+}
+async function verifyDialog(rp, done) {
+  let conns = [];
+  try { conns = await api('GET', '/api/v1/connections'); } catch (e) { /* viewer */ }
+  const own = rp.connection_id;
+  modal({ title: `Verify restore point ${rp.id}`, body: `<p class="muted">Reads every chunk of ${esc(rp.vm_name || 'this point')} (${esc(fmtBytes(rp.allocated_bytes))}) and checks it against its hash.</p>
+    ${can('restore') ? `<label class="c"><input type="checkbox" name="test_boot"> Also test boot: restore it with the NICs disconnected, wait for the guest tools or agent, then delete it</label>
+    <label class="f"><span>Test boot on</span><select name="connection_id">${conns.map(c => `<option value="${c.id}" ${c.id === own ? 'selected' : ''}>${esc(c.name)} (${esc(c.type)})</option>`).join('')}</select></label>` : ''}`,
+    buttons: [{ label: 'Cancel' }, { label: 'Verify', cls: 'primary', onClick: async m => {
+      const r = await api('POST', `/api/v1/restore-points/${rp.id}/verify`, { test_boot: !!val(m, 'test_boot'), connection_id: val(m, 'connection_id') ? Number(val(m, 'connection_id')) : null });
+      startedTask(r, 'Verification started'); if (done) done();
+    } }] });
+}

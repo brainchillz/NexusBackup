@@ -236,6 +236,39 @@ Next, in order:
    webhook) have no settings yet; they come with SSO as the first UI-first
    features on the table.
 
+8. **Certificate manager** (built 2026-10-30). `core/tls.py`: paths() with
+   the three sources (HVB_TLS_CERT/KEY managed outside and read-only,
+   imported, generated), info() with names, issuer, expiry, fingerprint,
+   origin and restart_needed (fingerprint at listener start vs the file),
+   regenerate(names, days), import_pem (key matches cert, chain order,
+   not expired, SAN present), revert() with the .previous pair, pins()
+   listing PVE storages, vCenter plug-in registrations, proxies and the
+   dashboard. Settings → Certificate with re-push buttons (disabled until
+   the restart), sidebar notices for restart needed and expiry under 30
+   days. Proxies deployed after a real certificate verify it. INSTALL 4.6
+   documents the page and the Caddy front door. 5 tests.
+9. **Verification jobs** (built 2026-10-30). `core/verify.py`: check_point
+   reads and hashes every non-zero chunk of a point (shared chunks once per
+   run), records verified/verify_status/verify_error on restore_points;
+   verify_task takes given points or every point not verified within
+   verify_max_age_days (oldest first); maybe_schedule runs the cron
+   setting from the scheduler tick (meta verify_next_run, recomputed when
+   the expression changes); test_boot_point restores isolated, waits for
+   tools (vSphere) or the guest agent / running state (Proxmox), deletes
+   the VM in a finally. Badges in the restore point lists, Verify… dialog
+   with the test boot option, Settings → Verification, sidebar notice and
+   dashboard alert for damaged points, `hvbackup verify`. Not yet proven
+   with a real test boot on the lab (the hash path is unit-tested on a
+   damaged repository). 4 tests.
+10. **Notifications** (built 2026-10-30, pulled forward from SSO).
+   `core/notify.py`: one webhook, settings webhook_enabled/url/secret and
+   four event switches; send() dedups the same failure for five minutes
+   and posts from a thread with retries; hooks in the backup failure path
+   (VMware and PVE), replication sync failure, task failure and verify
+   damage; `POST /notifications/test`; Settings → Notifications. The
+   secret is a `secret` kind: masked in the API, "changed" in the audit.
+   3 tests with a local HTTP server.
+
 Open decisions for the owner: which real VMs join the nightly jobs during the
 soak (vSphere and Proxmox). Order decided 2026-10-30: the remaining Phase 6
 items first, in the order listed under Phase 6 (container-first settings,
@@ -746,20 +779,17 @@ VDDK accelerator (see §0). The rest, in the order they are built (decided
 1. **Container-first settings** (built 2026-10-30, §0 item 7). The settings
    table and the Settings → Server page came first because the certificate
    manager, SSO and notifications all land on them.
-2. **Certificate manager in Settings** (below).
-3. **Verification jobs.** A scheduled task that reads every chunk a restore
-   point references, checks the BLAKE3 hash against the name, and marks the
-   point verified or damaged (column on restore_points, badge in the UI,
-   alert in the dashboard plug-in); a weekly default that spreads the work;
-   optional test boot of a sample on a connection (NICs disconnected, tools
-   heartbeat, power off and delete).
+2. **Certificate manager in Settings** (built 2026-10-30, §0 item 8).
+3. **Verification jobs** (built 2026-10-30, §0 item 9).
 4. **Postgres.** `db.py` behind a thin adapter so the catalog can live in
    Postgres for sites with several servers or a long history; SQLite stays
    the default and the Docker image needs nothing new.
 
 Then Phase 4 (SSO), then the Windows half of Phase 5.
 
-**Certificate manager in Settings** (added 2026-10-25). Today the server's
+**Certificate manager in Settings** (added 2026-10-25, built 2026-10-30; the
+"apply without a full restart" half became "restart once no task runs",
+since uvicorn keeps the TLS context it started with). Today the server's
 TLS is a self-signed pair generated at first start (`core/tls.py`) unless
 `HVB_TLS_CERT`/`HVB_TLS_KEY` point at files; changing it means editing
 `hvbackup.conf` and restarting, which nobody outside this lab will find.
@@ -807,7 +837,8 @@ order of how soon they bite:
   volume); proxy image URL/checksum in Settings and an upload for the
   offline OVA (today `HVB_PROXY_IMAGE*`).
 - Build the coming features UI-first: SSO (Phase 4) as Settings, not
-  config keys; notifications (SMTP, webhook) likewise.
+  config keys. Notifications: webhook built 2026-10-30 (§0 item 10); SMTP
+  not planned unless asked.
 - Conversion in Docker: done 2026-10-28 (image with the tool chain,
   availability in `/status`, the dialogs say so up front).
 - Minor: session lifetime and port as settings; an update-available

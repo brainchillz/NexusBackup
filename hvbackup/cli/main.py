@@ -26,6 +26,7 @@ Client side (any machine; HVB_URL + HVB_TOKEN, or ~/.config/hvbackup/client.conf
   hvbackup logs [--level L] [--grep X] [-n N]   the server log kept in memory
   hvbackup restart                      exit once no task runs; the service manager starts the server again
   hvbackup gc
+  hvbackup verify [<rp>|--all] [--max-age-days N] [--test-boot [--connection C]] [--wait]   read and hash every chunk of restore points
 Every command accepts --json for raw API output.
 """
 import argparse
@@ -160,6 +161,7 @@ def cmd_server(args):
         logging.getLogger('hvbackup').warning('catalog restored from the staged archive; the previous catalog is catalog.db.before-restore')
     settings.apply()  # log level and zone from the catalog (or the environment)
     crt, key = tls.ensure_cert()
+    tls.mark_running()
     uvicorn.run(create_app(), host=settings.get('bind'), port=settings.get('port'), ssl_certfile=crt, ssl_keyfile=key,
                 log_level=settings.get('log_level'), proxy_headers=True, forwarded_allow_ips='*', log_config=None)
 
@@ -525,6 +527,17 @@ def cmd_vsphere_plugin(args):
     out(args, c.call('POST', f'/connections/{args.connection}/vsphere-plugin', json={'action': args.action}, timeout=120))
 
 
+def cmd_verify(args):
+    c = Client()
+    if args.rp:
+        res = c.call('POST', f'/restore-points/{args.rp}/verify', json={'test_boot': args.test_boot, 'connection_id': resolve_connection(c, args.connection) if args.connection else None})
+    else:
+        res = c.call('POST', '/maintenance/verify', json={'max_age_days': args.max_age_days})
+    out(args, res)
+    if args.wait and not args.json:
+        wait_task(c, res['task_id'])
+
+
 def cmd_gc(args):
     c = Client()
     res = c.call('POST', '/maintenance/gc')
@@ -579,6 +592,7 @@ def main(argv=None):
     p.add_argument('--cpus', type=int, default=2); p.add_argument('--memory', type=int, default=2048, help='MiB'); p.add_argument('--ssh-key-file', help='public key for the ubuntu user')
     p.add_argument('--url', help='URL the proxy calls the server on (default: HVB_URL of the server, else this client\'s URL)'); p.add_argument('--timeout', type=int, default=20, help='minutes to wait for the agent')
     p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_proxies)
+    p = sub.add_parser('verify'); p.add_argument('rp', nargs='?', type=int); p.add_argument('--all', action='store_true'); p.add_argument('--max-age-days', type=int); p.add_argument('--test-boot', action='store_true'); p.add_argument('--connection'); p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_verify)
     p = sub.add_parser('settings'); p.add_argument('action', choices=['list', 'set']); p.add_argument('key', nargs='?'); p.add_argument('value', nargs='?'); p.set_defaults(fn=cmd_settings)
     p = sub.add_parser('logs'); p.add_argument('-n', type=int, default=100); p.add_argument('--level', default='info'); p.add_argument('--grep'); p.set_defaults(fn=cmd_logs)
     p = sub.add_parser('restart'); p.add_argument('--reason'); p.set_defaults(fn=cmd_restart)

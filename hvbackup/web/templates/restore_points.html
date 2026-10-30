@@ -20,7 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
       { h: 'Kind', f: r => r.kind === 'converted' ? `<span title="converted from restore point ${esc(r.source_rp_id)}">converted → ${esc(r.platform)}</span>` : esc(r.kind) },
       { h: 'Disk size', f: r => esc(fmtBytes(r.size_bytes)), cls: 'num' },
       { h: 'Allocated', f: r => esc(fmtBytes(r.allocated_bytes)), cls: 'num' },
-      { h: '', f: r => (can('restore') ? `<button class="btn sm primary" data-a="restore" data-id="${r.id}">Restore…</button> <button class="btn sm" data-a="export" data-id="${r.id}" title="Write an OVA copy of this restore point; the backup is untouched">Export OVA</button> ` : '') + (can('operator') ? `<button class="btn sm danger" data-a="del" data-id="${r.id}">Delete</button>` : '') },
+      { h: 'Verified', f: r => verifyBadge(r) },
+      { h: '', f: r => (can('restore') ? `<button class="btn sm primary" data-a="restore" data-id="${r.id}">Restore…</button> <button class="btn sm" data-a="export" data-id="${r.id}" title="Write an OVA copy of this restore point; the backup is untouched">Export OVA</button> ` : '') + (can('operator') ? `<button class="btn sm" data-a="verify" data-id="${r.id}" title="Read every chunk of this point and check its hash">Verify…</button> <button class="btn sm danger" data-a="del" data-id="${r.id}">Delete</button>` : '') },
     ], rows, 'No restore points yet.');
   }
   let exps = [];
@@ -57,6 +58,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const b = e.target.closest('button[data-a]'); if (!b) return;
     const rp = rps.find(r => String(r.id) === b.dataset.id);
     if (b.dataset.a === 'restore') restoreDialog(rp, rp.vm_name, rp.connection_id);
+    if (b.dataset.a === 'verify') verifyDialog(rp, () => load());
     if (b.dataset.a === 'export') confirmModal('Export OVA', `Write an OVA copy of restore point ${rp.id} of ${rp.vm_name} (${fmtBytes(rp.allocated_bytes)} of data) into the repository's exports folder? The restore point itself is not changed.`, async () => { const r = await api('POST', `/api/v1/restore-points/${rp.id}/export`, { format: 'ova' }); startedTask(r.task_id); load(); });
     if (b.dataset.a === 'del') confirmModal('Delete restore point', `Delete restore point ${rp.id} of ${rp.vm_name}? If it is the newest, the next backup is a full. Space is reclaimed by the nightly garbage collection.`, async () => { await api('DELETE', `/api/v1/restore-points/${rp.id}`); load(); }, 'danger');
   });

@@ -63,6 +63,21 @@ SPEC = {
                  help='Port of the HTTPS listener. In Docker the published port in compose.yml must match. Takes effect after a restart.'),
     'concurrency': dict(env='HVB_CONCURRENCY', default=2, kind='int', section='server', label='Concurrent operations per connection', min=1, max=32,
                         help='Backups, restores and replication syncs running at once against one vCenter, host or cluster; the rest wait in their task.'),
+    'verify_enabled': dict(env='HVB_VERIFY', default=True, kind='bool', section='verify', label='Scheduled verification',
+                           help='Read every chunk of every restore point on the schedule below and mark the point ok or damaged.'),
+    'verify_schedule': dict(env='HVB_VERIFY_SCHEDULE', default='0 4 * * 0', kind='cron', section='verify', label='Verification schedule (cron)',
+                            help='In the server\'s time zone. Default: Sundays at 04:00.'),
+    'verify_max_age_days': dict(env='HVB_VERIFY_MAX_AGE_DAYS', default=7, kind='int', section='verify', label='Skip points verified within (days)', min=1, max=365,
+                                help='A scheduled run reads only points not verified within this many days, so the work spreads over the weeks on a large repository.'),
+    'webhook_enabled': dict(env='HVB_WEBHOOK', default=False, kind='bool', section='notify', label='Send notifications to a webhook',
+                            help='One HTTPS POST with a JSON document per event. Slack, Mattermost, Discord and Teams incoming webhooks show it as a message; anything else gets the fields.'),
+    'webhook_url': dict(env='HVB_WEBHOOK_URL', default='', kind='url', section='notify', label='Webhook URL'),
+    'webhook_secret': dict(env='HVB_WEBHOOK_SECRET', default='', kind='secret', section='notify', label='Signing secret (optional)',
+                           help='When set, every request carries X-Hvbackup-Signature: sha256=HMAC-SHA256(secret, body).'),
+    'notify_backup_failed': dict(env='HVB_NOTIFY_BACKUP_FAILED', default=True, kind='bool', section='notify', label='Failed backups'),
+    'notify_verify_failed': dict(env='HVB_NOTIFY_VERIFY_FAILED', default=True, kind='bool', section='notify', label='Failed verifications (damaged restore points)'),
+    'notify_replication_failed': dict(env='HVB_NOTIFY_REPLICATION_FAILED', default=True, kind='bool', section='notify', label='Failed replication syncs'),
+    'notify_task_failed': dict(env='HVB_NOTIFY_TASK_FAILED', default=True, kind='bool', section='notify', label='Failed tasks (restores, exports, conversions, proxy deployments, anything else)'),
     'catalog_backup': dict(env='HVB_CATALOG_BACKUP', default=True, kind='bool', section='catalog', label='Daily catalog copy into the repository',
                            help='Writes a copy of the catalog, the secret key and the certificate into <repository>/catalog/ once a day, so the repository alone can rebuild a dead server.'),
     'catalog_backup_keep': dict(env='HVB_CATALOG_BACKUP_KEEP', default=7, kind='int', section='catalog', label='Catalog copies to keep', min=1, max=365),
@@ -95,6 +110,12 @@ def _coerce(key, raw):
         if v not in spec['choices']:
             raise ValueError(f'{spec["label"]}: one of {", ".join(spec["choices"])}')
         return v
+    if kind == 'cron':
+        from . import scheduler
+        v = str(raw).strip()
+        if v and not scheduler.validate(v):
+            raise ValueError(f'{spec["label"]}: not a cron expression (minute hour day month weekday)')
+        return v
     if kind == 'timezone':
         v = str(raw).strip()
         try:
@@ -109,6 +130,8 @@ def _coerce(key, raw):
             if u.scheme not in ('http', 'https') or not u.netloc:
                 raise ValueError(f'{spec["label"]}: must be an http(s) URL')
         return v
+    if kind == 'secret':
+        return str(raw).strip()
     if kind == 'path':
         v = str(raw).strip()
         if v and not os.path.isabs(v):
@@ -180,6 +203,8 @@ def describe():
     out = []
     for key, spec in SPEC.items():
         value, source = resolve(key)
+        if spec['kind'] == 'secret':
+            value = '••••••••' if value else ''
         out.append({'key': key, 'value': value, 'default': spec['default'], 'source': source, 'locked': source in ('environment', 'config file'),
                     'env': spec['env'], 'kind': spec['kind'], 'choices': spec.get('choices'), 'label': spec['label'], 'help': spec.get('help', ''),
                     'section': spec['section'], 'restart': bool(spec.get('restart'))})
@@ -205,7 +230,10 @@ def update(changes, user=None):
             else:
                 c.execute('INSERT OR REPLACE INTO settings(key, value, updated) VALUES(?,?,?)', (key, json.dumps(v), time.time()))
             if before != (SPEC[key]['default'] if v is None else v):
-                db.audit(user, 'setting', f'{key}: {before!r} -> {(SPEC[key]["default"] if v is None else v)!r}')
+                if SPEC[key]['kind'] == 'secret':
+                    db.audit(user, 'setting', f'{key}: changed')
+                else:
+                    db.audit(user, 'setting', f'{key}: {before!r} -> {(SPEC[key]["default"] if v is None else v)!r}')
                 if SPEC[key].get('restart'):
                     restart.append(key)
     invalidate()

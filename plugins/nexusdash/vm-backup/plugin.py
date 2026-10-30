@@ -479,6 +479,12 @@ def _alerts():
     for px in proxies or []:
         if px.get('enabled', True) and not px.get('online'):
             out.append({'key': 'vm-backup:proxy:%d' % px['id'], 'message': 'Backup proxy %s is offline' % px['name']})
+    try:
+        damaged = int((_cached('/status') or {}).get('damaged_points') or 0)
+    except Exception:                                       # noqa: BLE001
+        damaged = 0
+    if damaged:
+        out.append({'key': 'vm-backup:damaged', 'message': '%d restore point%s failed verification (chunks missing or corrupt in the repository)' % (damaged, '' if damaged == 1 else 's')})
     return out
 
 

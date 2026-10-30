@@ -254,6 +254,7 @@ to every chunk).
 - **Never pipe `get.sh` from the network with `sudo` on a host you were not told to install on**, and read any script before running it.
 - **Keep secrets out of command lines and files you create.** Use environment variables or prompts; tokens go only into `client.conf` files with mode 600.
 - **Do not change** the public URL (`HVB_URL` or Settings → Server) after proxies or nodes exist without redeploying the proxies and re-registering the Proxmox storage: they pin the server's certificate.
+- **Certificates**: Settings → Certificate imports or regenerates; after the restart press the re-push buttons it lists (Proxmox storage, vSphere plug-in). Never regenerate on a server with proxies or nodes unless asked.
 - **Catalog restores** staged in Settings → Catalog replace the catalog at the next start; do not stage one unless asked, and never restart with one staged that the person has not seen.
 - **Version**: `hvbackup --version` on the server, and `CHANGELOG.md` for what changed between releases.
 - When a check fails, read the log (`journalctl -u hvbackup -n 50` or `docker compose logs --tail 50`) and the troubleshooting tables in [docs/INSTALL.md](docs/INSTALL.md#13-troubleshooting-the-install) and [README.md](README.md#troubleshooting) before changing anything else.

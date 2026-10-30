@@ -177,7 +177,8 @@ def deploy_proxy(task, options):
     if cr['type'] not in ('vcenter', 'esxi'):
         raise RuntimeError(f'proxy VMs are deployed on vSphere connections only, not {cr["type"]}')
     server_url = options['server_url'].rstrip('/')
-    insecure = not (config.TLS_CERT and config.TLS_KEY)
+    from . import tls
+    insecure = tls.is_self_signed()
     task.log(f'deploying proxy {name} on {cr["name"]} ({cr["host"]}); the agent will call back to {server_url}'
              f'{" without certificate verification (self-signed server certificate)" if insecure else ""}')
     ova = ensure_image(task)

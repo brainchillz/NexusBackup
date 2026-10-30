@@ -11,7 +11,15 @@ Fix-ups are done by libguestfs on this server (virt-v2v-in-place towards KVM/Pro
 virt-customize towards VMware): virtio or VMware storage and network drivers in the
 initramfs, VMware tools out and the QEMU guest agent in or the reverse (installed on
 the guest's first boot), and a systemd .link file per NIC so the guest keeps its
-interface names although the PCI layout changes. Linux guests only in this release.
+interface names although the PCI layout changes.
+
+Windows guests: towards Proxmox, virt-v2v-in-place injects the virtio storage and network
+drivers from the virtio-win ISO into the registry and driver store, installs the QEMU
+guest agent at first boot (core/windows_tools.py fetches the ISO and the rhsrvany
+first-boot service). Towards VMware the copy uses devices Windows carries drivers for
+(LSI Logic SAS, E1000E); the SYSTEM hive is edited so the LSI driver loads at boot, and
+with install_tools a first-boot script runs the VMware Tools setup from the ISO the
+restore mounts after power-on.
 """
 import json
 import os
@@ -66,13 +74,102 @@ def availability():
     replication can run here (a native install without libguestfs cannot; the container image
     carries the tools). kvm: whether /dev/kvm is usable, which makes the fix-ups several times faster."""
     missing = sorted({t for target in TARGETS for t in missing_tools(target)})
+    from . import windows_tools
+    wt = windows_tools.status()
+    windows_missing = [n for n in wt['missing'] if n not in wt['fetchable']] + ([] if shutil.which('hivexregedit') else ['hivexregedit'])
     return {'available': not missing, 'missing': missing, 'kvm': os.access('/dev/kvm', os.R_OK | os.W_OK),
-            'how': None if not missing else TOOL_PACKAGES}
+            'how': None if not missing else TOOL_PACKAGES,
+            'windows': {'available': not missing and not windows_missing, 'ready': wt['ready'], 'missing': windows_missing,
+                        'how': 'Settings > Windows conversion tools (and apt install libwin-hivex-perl)' if windows_missing else None}}
 
 
 def guest_is_windows(spec):
     gid = (spec.get('guest_id') or '').lower()
     return 'win' in gid or gid.startswith('w')
+
+
+def windows_flavour(ins):
+    """('win11'|'win10'|'win8'|'win7', vSphere guestId) from the inspection of a Windows guest.
+    Proxmox's ostype picks the Hyper-V enlightenments; vSphere's guestId the defaults."""
+    product = (ins.get('product') or '').lower()
+    major, minor = ins.get('major', 0), ins.get('minor', 0)
+    server = 'server' in product or ins.get('variant', '').lower() == 'server'
+    x64 = ins.get('arch', 'x86_64') != 'i386'
+    if '2025' in product:
+        return 'win11', 'windows2022srvNext_64Guest'
+    if '2022' in product:
+        return 'win11', 'windows2019srvNext_64Guest'
+    if '2019' in product:
+        return 'win10', 'windows2019srv_64Guest'
+    if '2016' in product:
+        return 'win10', 'windows9Server64Guest'
+    if 'windows 11' in product:
+        return 'win11', 'windows11_64Guest'
+    if major >= 10:
+        if server:
+            return 'win11', 'windows2022srvNext_64Guest'
+        return 'win10', 'windows9_64Guest' if x64 else 'windows9Guest'
+    if (major, minor) in ((6, 2), (6, 3)):
+        return 'win8', ('windows8Server64Guest' if server else ('windows8_64Guest' if x64 else 'windows8Guest'))
+    if (major, minor) == (6, 1):
+        return 'win7', ('windows7Server64Guest' if server else ('windows7_64Guest' if x64 else 'windows7Guest'))
+    return 'win10', 'windows9_64Guest'
+
+
+VMWARE_TOOLS_FIRSTBOOT = r'''@echo off
+rem written by hvbackup at conversion: install VMware Tools from the ISO vSphere mounts after power-on
+set n=0
+:wait
+for %%d in (D E F G H I) do if exist %%d:\setup64.exe (
+  echo installing VMware Tools from %%d:
+  start /wait %%d:\setup64.exe /S /v"/qn REBOOT=R"
+  exit /b 0
+)
+set /a n+=1
+if %n% geq 180 exit /b 1
+timeout /t 10 /nobreak >nul
+goto wait
+'''
+
+
+def windows_boot_driver_fix(task, overlays, ins, workdir):
+    """Towards VMware: make the inbox LSI Logic SAS driver boot-start in the SYSTEM hive, so
+    the copy does not stop with INACCESSIBLE_BOOT_DEVICE on the new controller. Windows 8+
+    keeps a StartOverride under the service that would undo Start=0; it is removed. The hive
+    is pulled out through guestfish, edited with hivexregedit (a .reg merge) and pushed back."""
+    if not shutil.which('hivexregedit'):
+        raise RuntimeError('Windows conversion towards VMware needs hivexregedit (apt install libwin-hivex-perl) on the backup server')
+    sysroot = ins.get('systemroot') or '/Windows'
+    local = os.path.join(workdir, 'SYSTEM')
+    fish = ['guestfish', '--format=qcow2', '-i']
+    for ov in overlays:
+        fish += ['-a', ov]
+    real = run(task, fish + ['--ro', ':', 'case-sensitive-path', f'{sysroot}/System32/config/SYSTEM']).strip().splitlines()[-1]
+    run(task, fish + ['--ro', ':', 'download', real, local])
+    current = 1
+    sel = subprocess.run(['hivexregedit', '--export', local, r'\Select'], capture_output=True, text=True)
+    m = re.search(r'"Current"=dword:([0-9a-f]{8})', sel.stdout)
+    if m:
+        current = int(m.group(1), 16)
+    cs = f'ControlSet{current:03d}'
+    fixed = []
+    reg = ['Windows Registry Editor Version 5.00', '']
+    for svc in ('LSI_SAS', 'storahci', 'stornvme'):
+        ex = subprocess.run(['hivexregedit', '--export', local, f'\\{cs}\\Services\\{svc}'], capture_output=True, text=True)
+        if ex.returncode != 0 or f'[\\{cs}\\Services\\{svc}]' not in ex.stdout:
+            continue
+        reg += [f'[HKEY_LOCAL_MACHINE\\SYSTEM\\{cs}\\Services\\{svc}]', '"Start"=dword:00000000', '',
+                f'[-HKEY_LOCAL_MACHINE\\SYSTEM\\{cs}\\Services\\{svc}\\StartOverride]', '']
+        fixed.append(svc)
+    if 'LSI_SAS' not in fixed:
+        raise RuntimeError('this Windows has no LSI_SAS service (inbox driver missing); the copy would not boot on the LSI Logic SAS controller')
+    regfile = os.path.join(workdir, 'boot-drivers.reg')
+    with open(regfile, 'w', newline='\r\n') as f:
+        f.write('\n'.join(reg))
+    run(task, ['hivexregedit', '--merge', '--prefix', 'HKEY_LOCAL_MACHINE\\SYSTEM', local, regfile])
+    run(task, fish + [':', 'upload', local, real])
+    task.log(f'SYSTEM hive: {", ".join(fixed)} set to boot-start in {cs}, StartOverride removed')
+    return fixed
 
 
 def new_mac(target):
@@ -135,7 +232,7 @@ def inspect_guest(task, overlays):
     g = lambda k, d='': (os_el.findtext(k) or d)  # noqa: E731
     ins = {'type': g('name'), 'distro': g('distro'), 'major': int(g('major_version', '0') or 0), 'minor': int(g('minor_version', '0') or 0),
            'arch': g('arch'), 'product': g('product_name'), 'hostname': g('hostname'), 'package_management': g('package_management'),
-           'root': g('root')}
+           'root': g('root'), 'variant': g('product_variant'), 'systemroot': g('windows_systemroot')}
     return ins
 
 
@@ -258,15 +355,20 @@ def modified_chunks(map_json, chunk_size, capacity):
     return [ci for ci in sorted(touched) if ci not in zset], zeroed
 
 
-def pve_config_text(spec, name, nics, uuid, install_tools):
+def pve_config_text(spec, name, nics, uuid, install_tools, ostype='l26'):
     efi = spec.get('firmware') == 'efi'
+    windows = ostype.startswith('w')
     # one socket with all the vCPUs: VMware's one-core-per-socket default has no value on KVM
     cpus = max(int(spec.get('cpus') or 1), 1)
     lines = [f'name: {pve_name(name)}', f'cores: {cpus}', 'sockets: 1', f'memory: {int(spec.get("memory_mb") or 1024)}',
-             'ostype: l26', 'cpu: x86-64-v2-AES', 'scsihw: virtio-scsi-pci', f'agent: {1 if install_tools else 0}',
+             f'ostype: {ostype}', 'cpu: x86-64-v2-AES', 'scsihw: virtio-scsi-pci', f'agent: {1 if (install_tools or windows) else 0}',
              f'bios: {"ovmf" if efi else "seabios"}', f'smbios1: uuid={uuid}']
-    if efi:
+    if efi or windows:
         lines.append('machine: q35')
+    if windows:
+        lines.append('tablet: 1')
+        if spec.get('tpm') or ostype == 'win11' and not ('server' in (spec.get('guest_name') or '').lower()):
+            lines.append('tpmstate0: local:1,version=v2.0')  # Windows 11 insists on a TPM; the restore gives it one
     # qemu-server restores the drives named in #qmdump#map hints (virtdev:archive volume:storage:format)
     for i in range(len(spec['disks'])):
         lines.insert(0, f'#qmdump#map:scsi{i}:drive-scsi{i}::raw:')
@@ -290,30 +392,40 @@ def target_spec(spec, target, ins, nics, uuid, install_tools, source_rp, name):
     t = {k: v for k, v in spec.items() if k not in ('pve', 'pve_config', 'pve_firewall', 'vmtype', 'vmid')}
     t.update({'platform': target, 'uuid': uuid, 'placement': {}, 'platform_id': '', 'tools': '',
               'converted_from': {'restore_point': source_rp, 'platform': spec.get('platform'), 'guest': ins}})
+    windows = ins.get('type') == 'windows'
     if target == 'proxmox':
         t['guest_id'], t['guest_name'] = 'l26', 'Linux 2.6 - 6.x kernel'
+        if windows:
+            t['guest_id'] = windows_flavour(ins)[0]
+            t['guest_name'] = ins.get('product') or t['guest_id']
         # qemu-server matches archive volumes to config drives by 'drive-<key>', as its own backups name them
         t['disks'] = [{'key': f'drive-scsi{i}', 'label': d.get('label') or f'scsi{i}', 'capacity': d['capacity'], 'controller': 'virtio-scsi',
                        'bus': 0, 'unit': i, 'thin': True, 'file': '', 'mode': 'persistent', 'datastore': ''} for i, d in enumerate(spec['disks'])]
         t['nics'] = [{'key': f'net{i}', 'mac': n['mac'], 'model': 'virtio', 'network': n.get('network', ''), 'connected': n.get('connected', True)}
                      for i, n in enumerate(nics)]
         t['vmtype'], t['vmid'] = 'qemu', SYNTH_VMID_BASE + source_rp
-        t['pve_config'] = pve_config_text(spec, name, nics, uuid, install_tools)
-        t['tools'] = 'agent' if install_tools else ''
+        t['pve_config'] = pve_config_text(spec, name, nics, uuid, install_tools, ostype=t['guest_id'])
+        t['tools'] = 'agent' if (install_tools or windows) else ''
     else:
-        t['guest_id'] = vmware_guest_id(ins)
+        t['guest_id'] = windows_flavour(ins)[1] if windows else vmware_guest_id(ins)
         t['guest_name'] = ins.get('product') or t['guest_id']
-        t['disks'] = [{**d, 'controller': 'pvscsi', 'bus': 0, 'unit': i, 'thin': True, 'file': '', 'datastore': ''} for i, d in enumerate(spec['disks'])]
-        t['nics'] = [{'key': n.get('key', str(i)), 'mac': n['mac'], 'mac_fixed': True, 'model': 'vmxnet3', 'network': n.get('network', ''),
+        ctl, nic_model = ('lsilogicsas', 'e1000e') if windows else ('pvscsi', 'vmxnet3')
+        t['disks'] = [{**d, 'controller': ctl, 'bus': 0, 'unit': i, 'thin': True, 'file': '', 'datastore': ''} for i, d in enumerate(spec['disks'])]
+        t['nics'] = [{'key': n.get('key', str(i)), 'mac': n['mac'], 'mac_fixed': True, 'model': nic_model, 'network': n.get('network', ''),
                       'connected': n.get('connected', True)} for i, n in enumerate(nics)]
-        t['tools'] = 'open-vm-tools (first boot)' if install_tools else ''
+        t['tools'] = ('VMware Tools (first boot)' if windows else 'open-vm-tools (first boot)') if install_tools else ''
+        if windows and install_tools:
+            t['cdrom'] = True  # a drive for vSphere to mount the tools ISO in after power-on
     return t
 
 
-def fixup_command(target, overlays, ins, links, install_tools, copy_ins=()):
+def fixup_command(target, overlays, ins, links, install_tools, copy_ins=(), firstboot=None):
+    windows = ins.get('type') == 'windows'
     if target == 'proxmox':
         cmd = ['virt-v2v-in-place', '-i', 'disk', '-if', 'qcow2', '--block-driver', 'virtio-scsi']
         cmd += overlays
+        if windows:
+            return cmd  # virt-v2v does the whole Windows job: drivers, guest agent, first-boot service
         for p in links:
             cmd += ['--copy-in', f'{p}:/etc/systemd/network']
         for local, remote_dir in copy_ins:
@@ -324,6 +436,10 @@ def fixup_command(target, overlays, ins, links, install_tools, copy_ins=()):
     cmd = ['virt-customize', '--format', 'qcow2']
     for ov in overlays:
         cmd += ['-a', ov]
+    if windows:
+        if firstboot:
+            cmd += ['--firstboot', firstboot]
+        return cmd
     for p in links:
         cmd += ['--copy-in', f'{p}:/etc/systemd/network']
     for local, remote_dir in copy_ins:
@@ -360,13 +476,19 @@ def convert(task, rp_id, target, options):
         raise RuntimeError(f'restore point {rp_id} already is a {target} restore point')
     if spec.get('vmtype') == 'lxc' or spec.get('firmware') == 'container':
         raise RuntimeError('containers cannot be converted into VMs')
-    if guest_is_windows(spec):
-        raise RuntimeError(f'{spec.get("guest_name") or spec.get("guest_id")}: Windows guests are not converted in this release (Linux only)')
+    windows = guest_is_windows(spec)
+    if windows:
+        from . import windows_tools
+        if not windows_tools.status()['ready'] and not windows_tools.status()['fetchable']:
+            raise RuntimeError('Windows conversion needs the virtio-win ISO and rhsrvany.exe: set their download URLs or upload them under Settings > Windows conversion tools')
     if spec.get('tpm'):
         task.log('WARNING: the source VM has a TPM; it is not carried over')
     if spec.get('secure_boot'):
         task.log('WARNING: secure boot was enabled on the source; the copy boots with secure boot off')
     check_tools(target)
+    if windows:
+        task.progress(0.01, 'checking the Windows conversion tools')
+        windows_tools.ensure(task)
     new_identity = options.get('new_identity', True)
     install_tools = bool(options.get('install_tools'))
     # replication converts the same VM again and again: the copy must keep the MACs and UUID
@@ -394,18 +516,27 @@ def convert(task, rp_id, target, options):
         # 2. look inside
         task.progress(0.05, 'inspecting the guest')
         ins = inspect_guest(task, overlays)
-        if ins['type'] != 'linux':
-            raise RuntimeError(f'the guest is {ins["type"] or "unknown"} ({ins.get("product") or "?"}); only Linux guests are converted in this release')
-        task.log(f'guest: {ins["product"] or ins["distro"]} ({ins["distro"]} {ins["major"]}.{ins["minor"]}, {ins["arch"]}, '
-                 f'packages via {ins["package_management"] or "?"}, hostname {ins["hostname"] or "?"})')
-        net_files = guest_net_files(task, overlays, work)
+        if ins['type'] not in ('linux', 'windows'):
+            raise RuntimeError(f'the guest is {ins["type"] or "unknown"} ({ins.get("product") or "?"}); only Linux and Windows guests are converted')
+        windows = ins['type'] == 'windows'
+        if windows and ins.get('major', 0) < 6 or windows and (ins.get('major'), ins.get('minor')) == (6, 0):
+            raise RuntimeError(f'{ins.get("product") or "this Windows"} is older than Windows 7 / Server 2008 R2; the driver packages do not support it')
+        if windows:
+            task.log(f'guest: {ins["product"] or "Windows"} ({ins["major"]}.{ins["minor"]}, {ins["arch"]}, {ins.get("variant") or "?"}, '
+                     f'system root {ins.get("systemroot") or "?"}, hostname {ins["hostname"] or "?"})')
+        else:
+            task.log(f'guest: {ins["product"] or ins["distro"]} ({ins["distro"]} {ins["major"]}.{ins["minor"]}, {ins["arch"]}, '
+                     f'packages via {ins["package_management"] or "?"}, hostname {ins["hostname"] or "?"})')
+        net_files = {} if windows else guest_net_files(task, overlays, work)
         names = nic_names_in(net_files)
         nics = []
         fixed_macs = list(identity.get('macs') or [])
         for i, n in enumerate(spec.get('nics') or []):
             mac = fixed_macs[i] if i < len(fixed_macs) and fixed_macs[i] else (n.get('mac') if not new_identity else '')
             nics.append({**n, 'mac': mac or new_mac(target)})
-        if names:
+        if windows and nics:
+            task.log('Windows: the new NIC appears as a fresh adapter; a static address on the old one must be set again (DHCP carries over)')
+        elif names:
             task.log(f'interface names in the guest configuration: {", ".join(names)}; pinned to the {"new" if new_identity else "original"} MAC addresses')
         elif nics:
             task.log('no interface names found in the guest configuration (DHCP on any name assumed); none pinned')
@@ -424,10 +555,33 @@ def convert(task, rp_id, target, options):
 
         # 3. fix the guest up for the target
         task.progress(0.1, f'adapting the guest for {target} (libguestfs)')
-        cmd = fixup_command(target, overlays, ins, links, install_tools, copy_ins)
-        task.log('running ' + os.path.basename(cmd[0]) + (' with first-boot install of ' + ('qemu-guest-agent' if target == 'proxmox' else 'open-vm-tools') if install_tools else ''))
+        env = guest_env()
+        firstboot = None
+        if windows:
+            from . import windows_tools
+            env = windows_tools.env(env)
+            if target == 'vmware':
+                windows_boot_driver_fix(task, overlays, ins, work)
+                if install_tools:
+                    firstboot = os.path.join(work, 'hvbackup-vmware-tools.bat')
+                    with open(firstboot, 'w', newline='\r\n') as f:
+                        f.write(VMWARE_TOOLS_FIRSTBOOT)
+        cmd = fixup_command(target, overlays, ins, links, install_tools, copy_ins, firstboot)
+        what = ''
+        if windows and target == 'proxmox':
+            what = ' (virtio drivers from virtio-win, QEMU guest agent at first boot)'
+        elif windows and firstboot:
+            what = ' with a first-boot install of VMware Tools'
+        elif install_tools:
+            what = ' with first-boot install of ' + ('qemu-guest-agent' if target == 'proxmox' else 'open-vm-tools')
+        task.log('running ' + os.path.basename(cmd[0]) + what)
         t0 = time.time()
-        run(task, cmd, prefix='  ' + os.path.basename(cmd[0]) + ': ')
+        if windows and target == 'vmware' and not firstboot:
+            task.log('no VMware Tools: the copy boots with E1000E and LSI SAS drivers; install the Tools from vSphere afterwards')
+        if len(cmd) > 5 or not windows or target == 'proxmox':
+            run(task, cmd, env=env, prefix='  ' + os.path.basename(cmd[0]) + ': ')
+        else:
+            task.log('nothing for virt-customize to do')
         task.log(f'guest fix-ups done in {time.time() - t0:.0f} s')
         task.check_cancel()
 

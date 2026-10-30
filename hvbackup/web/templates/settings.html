@@ -11,6 +11,10 @@
 <div class="card" id="notifycard" hidden><h2>Notifications</h2>
 <form class="settings-grid notify" data-section="notify" id="notify-form"></form>
 <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-save>Save</button><button class="btn" id="webhook-test">Send a test</button><span class="muted">A JSON document per ticked event to the URL. The test uses the fields as typed, saved or not.</span></div></div>
+<div class="card" id="windowscard" hidden><h2>Windows conversion tools</h2><p class="muted">Converting a Windows guest between VMware and Proxmox needs the virtio-win driver ISO and the rhsrvany first-boot helper. They are fetched from these URLs on the first Windows conversion, or uploaded here for sites without internet access.</p>
+<form class="settings-rows" data-section="windows" id="windows-form"></form>
+<div class="toolbar" style="margin-top:10px"><button class="btn primary" data-save>Save</button><span class="muted" id="windows-note"></span></div>
+<div id="windows-files"></div></div>
 <div class="card" id="certcard" hidden><a id="certificate"></a><h2>Certificate</h2><p class="muted">The HTTPS certificate of this server. A new one is served after a restart; the list below says what pins the current one and offers the re-push.</p>
 <dl class="kv" id="cert"></dl>
 <div class="toolbar" style="margin-top:10px"><button class="btn" id="cert-regen">Regenerate self-signed…</button><button class="btn" id="cert-import">Import certificate…</button><a class="btn" href="/api/v1/certificate/download" download>Download</a><button class="btn" id="cert-revert" hidden>Revert to the previous</button><button class="btn danger" id="cert-restart" hidden>Restart to apply</button></div>
@@ -38,7 +42,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const r = st.repository;
     document.getElementById('repo').innerHTML = [['Path', `<span class="mono">${esc(r.path)}</span>`], ['Repository ID', `<span class="mono">${esc(r.id)}</span>`], ['Chunks', esc(r.chunks)], ['Stored', esc(fmtBytes(r.stored_bytes))],
       ['Free on volume', esc(fmtBytes(r.free_bytes)) + ' of ' + esc(fmtBytes(r.total_bytes))], ['Last garbage collection', esc(st.last_gc ? fmtTime(st.last_gc) : 'never')], ['Server version', esc(st.version)],
-      ['VMware ↔ Proxmox conversion', st.conversion ? (st.conversion.available ? 'available' + (st.conversion.kvm ? ' (KVM)' : ' (no /dev/kvm: slower)') : 'unavailable, missing ' + esc(st.conversion.missing.join(', '))) : '']].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+      ['VMware ↔ Proxmox conversion', st.conversion ? (st.conversion.available ? 'available' + (st.conversion.kvm ? ' (KVM)' : ' (no /dev/kvm: slower)') : 'unavailable, missing ' + esc(st.conversion.missing.join(', '))) + (st.conversion.windows ? (st.conversion.windows.available ? (st.conversion.windows.ready ? '; Windows guests: tools present' : '; Windows guests: tools fetched on first use') : '; Windows guests: ' + esc(st.conversion.windows.missing.join(', ')) + ' missing') : '') : '']].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   }
   async function loadTokens() {
     renderTable(document.getElementById('tokens'), [
@@ -124,6 +128,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   document.querySelectorAll('form.settings-grid, form.settings-rows').forEach(f => f.onsubmit = e => { e.preventDefault(); saveSettings().catch(err => toast(err.message)); });
   document.getElementById('restart').onclick = () => confirmModal('Restart server', 'The server exits as soon as no task is running (10 minutes at most) and the service manager starts it again. Browsers reconnect by themselves.', async () => { await api('POST', '/api/v1/server/restart?reason=settings'); loadSettings(); }, 'danger');
+
+  // ── windows conversion tools ──
+  async function loadWindowsTools() {
+    if (!admin) return;
+    const st = await api('GET', '/api/v1/windows-tools');
+    document.getElementById('windows-note').innerHTML = st.ready ? badge('ready', 'ok') : (st.fetchable.length === st.missing.length ? 'fetched on the first Windows conversion' : badge('missing: ' + st.missing.join(', '), 'bad'));
+    renderTable(document.getElementById('windows-files'), [
+      { h: 'File', f: ([n]) => `<span class="mono">${esc(n)}</span>` }, { h: 'Purpose', f: ([, f]) => esc(f.what) },
+      { h: 'State', f: ([, f]) => f.present ? badge('present', 'ok') + ` <span class="muted">${esc(fmtBytes(f.size))}</span>` : (f.url ? '<span class="muted">not yet fetched</span>' : badge(f.required ? 'missing, no URL' : 'absent (optional)', f.required ? 'bad' : 'plain')) },
+      { h: '', f: ([n, f]) => `${f.url ? `<button class="btn sm" data-a="wt-fetch" data-name="${esc(n)}">${f.present ? 'Fetch again' : 'Fetch now'}</button> ` : ''}<button class="btn sm" data-a="wt-upload" data-name="${esc(n)}">Upload…</button> ${f.present ? `<button class="btn sm danger" data-a="wt-del" data-name="${esc(n)}">Delete</button>` : ''}` },
+    ], Object.entries(st.files));
+  }
 
   // ── certificate ──
   async function loadCert() {
@@ -239,8 +255,8 @@ document.addEventListener('DOMContentLoaded', () => {
     m.querySelector('#audit-q').oninput = render; render();
   };
 
-  for (const id of ['servercard', 'verifycard', 'notifycard', 'certcard', 'catalogcard', 'proxyimagecard', 'themescard', 'logscard']) document.getElementById(id).hidden = !admin;
-  loadRepo(); loadTokens(); loadUsers(); loadSettings(); loadVerifyNote(); loadCert(); loadCatalog(); loadImage(); loadThemes();
+  for (const id of ['servercard', 'verifycard', 'notifycard', 'windowscard', 'certcard', 'catalogcard', 'proxyimagecard', 'themescard', 'logscard']) document.getElementById(id).hidden = !admin;
+  loadRepo(); loadTokens(); loadUsers(); loadSettings(); loadVerifyNote(); loadWindowsTools(); loadCert(); loadCatalog(); loadImage(); loadThemes();
   document.getElementById('gc').onclick = () => confirmModal('Run garbage collection', 'Remove chunks no restore point references. Chunks written in the last hour are kept.', async () => startedTask(await api('POST', '/api/v1/maintenance/gc'), 'GC started'));
   document.getElementById('newtoken').onclick = () => modal({ title: 'New API token', body: `<label class="f"><span>Name</span><input name="name" placeholder="cli on my laptop"></label>${admin ? '<label class="f"><span>For user (blank = me)</span><input name="username"></label>' : ''}`,
     buttons: [{ label: 'Cancel' }, { label: 'Create', cls: 'primary', onClick: async m => {
@@ -255,6 +271,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.body.addEventListener('click', async e => {
     const b = e.target.closest('button[data-a],button#restore-apply,button#restore-discard'); if (!b) return;
     const a = b.dataset.a, u = b.dataset.u;
+    if (a === 'wt-fetch') startedTask(await api('POST', `/api/v1/windows-tools/${encodeURIComponent(b.dataset.name)}/fetch`), `Fetching ${b.dataset.name}`);
+    if (a === 'wt-upload') uploadModal(`Upload ${b.dataset.name}`, 'The file is stored under the data directory and used for every Windows conversion.', '', `/api/v1/windows-tools/${encodeURIComponent(b.dataset.name)}`, () => { toast('Uploaded'); loadWindowsTools(); });
+    if (a === 'wt-del') confirmModal('Delete file', `Delete ${b.dataset.name}? It is fetched again from its URL at the next Windows conversion.`, async () => { await api('DELETE', `/api/v1/windows-tools/${encodeURIComponent(b.dataset.name)}`); loadWindowsTools(); }, 'danger');
     if (a === 'repush-pve') confirmModal('Re-register storage', 'Re-key the hvbackup storage on this cluster with the current certificate fingerprint. Running Proxmox backups are not affected.', async () => { const r = await api('POST', `/api/v1/connections/${b.dataset.cid}/pve-storage`, {}); toast('Storage registered, fingerprint ' + (r.fingerprint || '').slice(0, 23) + '…'); });
     if (a === 'repush-vsp') confirmModal('Update plug-in registration', 'Update the vSphere Client plug-in registration on this vCenter with the current certificate thumbprint.', async () => { await api('POST', `/api/v1/connections/${b.dataset.cid}/vsphere-plugin`, { action: 'update' }); toast('Plug-in registration updated'); });
     if (a === 'restore-copy') confirmModal('Restore from this copy', `Stage ${b.dataset.name} as the catalog. Nothing changes until the server restarts.`, async () => { const d = await api('POST', `/api/v1/catalog/restore?name=${encodeURIComponent(b.dataset.name)}`); toast(`Staged: ${d.users} users, ${d.vms} VMs, ${d.restore_points} restore points`); loadCatalog(); });

@@ -270,10 +270,10 @@ Next, in order:
    3 tests with a local HTTP server.
 
 Open decisions for the owner: which real VMs join the nightly jobs during the
-soak (vSphere and Proxmox). Order decided 2026-10-30: the remaining Phase 6
-items first, in the order listed under Phase 6 (container-first settings,
-certificate manager, verification jobs, Postgres), then SSO (4), then
-Windows conversion (5). Dropped from the plan on 2026-10-30: encryption at
+soak (vSphere and Proxmox). Order decided 2026-10-30, revised the same
+evening after settings, certificate manager, verification and notifications
+shipped: Windows conversion (5) next, then SSO (4), then Postgres (the last
+Phase 6 item). Dropped from the plan on 2026-10-30: encryption at
 rest (the repository sits on storage the owner controls; disk or filesystem
 encryption under it does the job without a key the server must hold),
 file-level restore (not wanted: restores are whole VMs), instant recovery
@@ -783,9 +783,8 @@ VDDK accelerator (see §0). The rest, in the order they are built (decided
 3. **Verification jobs** (built 2026-10-30, §0 item 9).
 4. **Postgres.** `db.py` behind a thin adapter so the catalog can live in
    Postgres for sites with several servers or a long history; SQLite stays
-   the default and the Docker image needs nothing new.
-
-Then Phase 4 (SSO), then the Windows half of Phase 5.
+   the default and the Docker image needs nothing new. Moved behind the
+   Windows half of Phase 5 and SSO (Phase 4) on 2026-10-30.
 
 **Certificate manager in Settings** (added 2026-10-25, built 2026-10-30; the
 "apply without a full restart" half became "restart once no task runs",

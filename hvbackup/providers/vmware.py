@@ -742,6 +742,13 @@ def _restore_into(task, api, rp, options, proxy_row, rep, manifest, spec, cs, na
             nic.macAddress = n['mac']
         dev_changes.append(vim.vm.device.VirtualDeviceSpec(operation='add', device=nic))
         key -= 1
+    if spec.get('cdrom'):
+        # converted Windows copies with a first-boot VMware Tools install: a drive for the tools ISO
+        cd = vim.vm.device.VirtualCdrom(key=key, controllerKey=200, unitNumber=0,
+                                        backing=vim.vm.device.VirtualCdrom.RemotePassthroughBackingInfo(deviceName='', exclusive=False),
+                                        connectable=vim.vm.device.VirtualDevice.ConnectInfo(startConnected=False, allowGuestControl=True))
+        dev_changes.append(vim.vm.device.VirtualDeviceSpec(operation='add', device=cd))
+        key -= 1
     cfg = vim.vm.ConfigSpec(name=name, memoryMB=spec['memory_mb'], numCPUs=spec['cpus'], numCoresPerSocket=spec.get('cores_per_socket', 1),
                             guestId=spec['guest_id'], firmware=spec.get('firmware', 'bios'),
                             files=vim.vm.FileInfo(vmPathName=vm_folder), deviceChange=dev_changes,
@@ -754,6 +761,14 @@ def _restore_into(task, api, rp, options, proxy_row, rep, manifest, spec, cs, na
     if options.get('power_on'):
         wait_task(vm.PowerOnVM_Task(), 'power on')
         task.log('powered on')
+        if spec.get('cdrom') and 'VMware Tools' in (spec.get('tools') or ''):
+            try:
+                vm.MountToolsInstaller()
+                task.log('VMware Tools ISO mounted: the first-boot script in the guest installs the Tools')
+            except Exception as e:  # noqa: BLE001
+                task.log(f'WARNING: could not mount the VMware Tools ISO ({e}); install the Tools from vSphere by hand')
+    elif spec.get('cdrom') and 'VMware Tools' in (spec.get('tools') or ''):
+        task.log('power the VM on and choose "Install VMware Tools" in vSphere: the first-boot script in the guest runs the setup from the mounted ISO')
     vct.done()
     return {'moref': vm._moId, 'name': vm.name, 'host': host_name, 'datastore': ds.name,
             'disks': [{'key': d['key'], 'file': path, 'capacity': d['capacity']} for d, path in created]}

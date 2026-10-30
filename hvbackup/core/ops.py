@@ -522,6 +522,8 @@ def register_tasks():
     tasks.register('replicate', replication.replicate_task)
     from . import verify
     tasks.register('verify', verify.verify_task)
+    from . import windows_tools
+    tasks.register('windows_tools', lambda task, name: {'path': windows_tools.download(name, task)})
 
 
 def scheduler_run_job(job_id, created_by):

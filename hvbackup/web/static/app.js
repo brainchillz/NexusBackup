@@ -401,7 +401,7 @@ async function replicationDialog(rep) {
       <label class="f"><span>Folder / pool</span><select name="folder"><option value="">(root)</option></select></label>
     </div>
     <div id="netmap" class="row"></div>
-    <p class="muted" id="convnote" style="display:none">The platforms differ: each sync converts the newest restore point first (Linux guests). The copy keeps the identity of its first conversion.</p>
+    <p class="muted" id="convnote" style="display:none">The platforms differ: each sync converts the newest restore point first (Linux and Windows guests). The copy keeps the identity of its first conversion.</p>
     <p class="err" id="convwarn" style="display:none"></p>
     <label class="f"><span>Replica name suffix</span><input name="suffix" value="${esc(o.suffix === undefined ? '-replica' : o.suffix)}"></label>
     ${scheduleField('schedule', j.schedule, { optional: true, noneLabel: 'No schedule (after backups only)' })}

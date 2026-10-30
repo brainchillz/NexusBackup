@@ -1,0 +1,37 @@
+# Builds rhsrvany.exe and pnp_wait.exe (github.com/rwmjones/rhsrvany, GPL) from a pinned commit with
+# mingw and publishes them as assets of the "windows-tools-1" release, the default download location
+# of Settings > Windows conversion tools on native installs (the container image builds its own copy).
+name: windows-tools
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: rhsrvany commit to build
+        default: 74fc2f5
+      release:
+        description: release tag to attach the assets to
+        default: windows-tools-1
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with mingw
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q mingw-w64 autoconf automake make
+          git clone -q https://github.com/rwmjones/rhsrvany.git /tmp/rhsrvany
+          cd /tmp/rhsrvany && git checkout -q "${{ github.event.inputs.ref }}"
+          autoreconf -fi && ./configure --host=i686-w64-mingw32 && make
+          i686-w64-mingw32-strip RHSrvAny/rhsrvany.exe pnp_wait/pnp_wait.exe
+          mkdir -p /tmp/out && cp RHSrvAny/rhsrvany.exe pnp_wait/pnp_wait.exe /tmp/out/
+          cd /tmp/out && sha256sum rhsrvany.exe pnp_wait.exe > SHA256SUMS
+          printf 'rhsrvany.exe and pnp_wait.exe built from https://github.com/rwmjones/rhsrvany commit %s (GPL-2.0-or-later; source at that link).\nUsed by NexusBackup as the first-boot helper inside converted Windows guests (libguestfs VIRT_TOOLS_DATA_DIR).\n' "${{ github.event.inputs.ref }}" > README.txt
+      - name: Publish as release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.inputs.release }}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Windows conversion helpers" --notes "rhsrvany.exe and pnp_wait.exe, cross-built from the upstream source; see README.txt" --latest=false
+          gh release upload "$tag" /tmp/out/rhsrvany.exe /tmp/out/pnp_wait.exe /tmp/out/SHA256SUMS /tmp/out/README.txt --clobber

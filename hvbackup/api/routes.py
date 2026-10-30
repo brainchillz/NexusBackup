@@ -1111,6 +1111,43 @@ def catalog_restore_discard(user=Depends(require('admin'))):
     return {'ok': True}
 
 
+# ── windows conversion tools ─────────────────────────────────────────
+@r.get('/windows-tools')
+def windows_tools_status(user=Depends(current_user)):
+    """The virtio-win ISO and the first-boot helpers a Windows conversion needs: present, size, URL."""
+    from ..core import windows_tools
+    return windows_tools.status()
+
+
+@r.post('/windows-tools/{name}', status_code=201)
+async def windows_tools_upload(name: str, file: UploadFile = File(...), user=Depends(require('admin'))):
+    from ..core import windows_tools
+    try:
+        st = windows_tools.save_upload(name, file.file)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.audit(user['username'], 'windows_tools_uploaded', name)
+    return st
+
+
+@r.post('/windows-tools/{name}/fetch')
+def windows_tools_fetch(name: str, user=Depends(require('admin'))):
+    """Download the file from its configured URL now (the first Windows conversion would do it too)."""
+    from ..core import windows_tools
+    if name not in windows_tools.FILES:
+        raise HTTPException(404, 'unknown file')
+    return {'task_id': tasks.create('windows_tools', subject=name, created_by=user['username'], name=name)}
+
+
+@r.delete('/windows-tools/{name}')
+def windows_tools_delete(name: str, user=Depends(require('admin'))):
+    from ..core import windows_tools
+    try:
+        return windows_tools.remove(name)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
 # ── certificate ──────────────────────────────────────────────────────
 class CertRegenerate(BaseModel):
     names: list = []

@@ -86,7 +86,11 @@ CONF
     if command -v apt-get >/dev/null && ! command -v qemu-img >/dev/null; then apt-get install -y -q qemu-utils >/dev/null 2>&1 || echo "note: install qemu-utils to enable OVA export"; fi
     # cross-platform conversion (libguestfs on this host): best effort, the server works without it
     if command -v apt-get >/dev/null && ! command -v virt-v2v-in-place >/dev/null; then
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -q virt-v2v libguestfs-tools >/dev/null 2>&1 || echo "note: install virt-v2v and libguestfs-tools to enable VMware <-> Proxmox conversion"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q virt-v2v libguestfs-tools libwin-hivex-perl >/dev/null 2>&1 || echo "note: install virt-v2v, libguestfs-tools and libwin-hivex-perl to enable VMware <-> Proxmox conversion"
+    fi
+    # Windows guests: the registry editor for the boot driver fix (the driver ISO and first-boot helper are fetched by the server)
+    if command -v apt-get >/dev/null && command -v virt-v2v-in-place >/dev/null && ! command -v hivexregedit >/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q libwin-hivex-perl >/dev/null 2>&1 || echo "note: install libwin-hivex-perl to convert Windows guests towards VMware"
     fi
     if command -v virt-v2v-in-place >/dev/null; then
         for k in /boot/vmlinuz-*; do [ -f "$k" ] && ! dpkg-statoverride --list "$k" >/dev/null 2>&1 && dpkg-statoverride --update --add root root 0644 "$k" >/dev/null 2>&1 || chmod 0644 "$k" 2>/dev/null; done

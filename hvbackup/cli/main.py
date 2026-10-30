@@ -16,7 +16,7 @@ Client side (any machine; HVB_URL + HVB_TOKEN, or ~/.config/hvbackup/client.conf
   hvbackup replications list|add|run|delete    standby copies on another connection, synced after backups or on a schedule
   hvbackup replicas list|failover|test|end-test|forget [--delete-vm]
   hvbackup restore <rp> --name NAME [--connection C] [--host H] [--datastore DS] [--network SRC=DST]... [--power-on] [--keep-identity] [--install-tools] [--wait]
-  hvbackup convert <rp> --to proxmox|vmware [--install-tools] [--keep-identity] [--wait]   restore point for the other platform (Linux guests)
+  hvbackup convert <rp> --to proxmox|vmware [--install-tools] [--keep-identity] [--wait]   restore point for the other platform (Linux and Windows guests)
   hvbackup connections placement <id|name>      hosts, datastores and networks to restore onto
   hvbackup connections pve-setup|pve-storage <id|name>   Proxmox: node installer one-liner; register the hvbackup storage
   hvbackup tasks list|show|wait|cancel
@@ -573,7 +573,7 @@ def main(argv=None):
     p.add_argument('--network', action='append', metavar='SOURCE=TARGET', help='map a source network to one on the target (repeatable)')
     p.add_argument('--install-tools', action='store_true', help='cross-platform: install the target\'s guest tools on the copy\'s first boot')
     p.add_argument('--wait', action='store_true'); p.set_defaults(fn=cmd_restore)
-    p = sub.add_parser('convert', help='make a restore point of the other platform from one (Linux guests)'); p.add_argument('rp', type=int)
+    p = sub.add_parser('convert', help='make a restore point of the other platform from one (Linux and Windows guests)'); p.add_argument('rp', type=int)
     p.add_argument('--to', required=True, choices=['proxmox', 'vmware']); p.add_argument('--name', help='VM name the converted point carries')
     p.add_argument('--keep-identity', action='store_true', help='keep the MAC addresses and UUID instead of fresh ones')
     p.add_argument('--install-tools', action='store_true', help='install qemu-guest-agent / open-vm-tools on the copy\'s first boot')

@@ -465,8 +465,11 @@ def restore_vm(task, api: Proxmox, cr, rp, options):
                     opts['bridge'] = dst
                     changes[key] = ','.join(([first] if first else []) + [f'{k}={v}' for k, v in opts.items()])
     if converted and vmtype == 'qemu' and spec.get('firmware') == 'efi' and 'efidisk0' not in cfg:
-        # the archive carries no EFI vars disk; give the copy one (initialised from OVMF_VARS)
-        changes['efidisk0'] = f'{storage}:1,efitype=4m,pre-enrolled-keys=0'
+        # the archive carries no EFI vars disk; give the copy one (initialised from OVMF_VARS). A
+        # source with secure boot on gets the Microsoft keys enrolled, so Windows keeps booting signed.
+        changes['efidisk0'] = f'{storage}:1,efitype=4m,pre-enrolled-keys={1 if spec.get("secure_boot") else 0}'
+    if converted and vmtype == 'qemu' and 'tpmstate0' in (spec.get('pve_config') or '') and 'tpmstate0' not in cfg:
+        changes['tpmstate0'] = f'{storage}:1,version=v2.0'
     if changes:
         if 'efidisk0' in changes:
             up = api.post(f'/nodes/{node}/{vmtype}/{vmid}/config', **changes)

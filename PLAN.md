@@ -261,8 +261,8 @@ Next, in order:
    with a real test boot on the lab (the hash path is unit-tested on a
    damaged repository). 4 tests.
 10. **Notifications** (built 2026-10-30, pulled forward from SSO).
-   `core/notify.py`: one webhook, settings webhook_enabled/url/secret and
-   four event switches; send() dedups the same failure for five minutes
+   `core/notify.py`: one webhook, settings webhook_url/secret and four
+   event ticks (a URL plus a tick is all it takes; no separate enable); send() dedups the same failure for five minutes
    and posts from a thread with retries; hooks in the backup failure path
    (VMware and PVE), replication sync failure, task failure and verify
    damage; `POST /notifications/test`; Settings → Notifications. The

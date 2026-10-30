@@ -8,9 +8,9 @@
 <div class="card" id="verifycard" hidden><h2>Verification</h2><p class="muted">Reads the chunks of every restore point on a schedule and checks each against its hash, so damage on the repository disk shows up before a restore needs the data. Damaged points are flagged in the restore point lists and in the dashboard plug-in.</p>
 <form class="settings-grid" data-section="verify" id="verify-form"></form>
 <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-save>Save</button><button class="btn" id="verify-now">Verify everything now</button><span class="muted" id="verify-note"></span></div></div>
-<div class="card" id="notifycard" hidden><h2>Notifications</h2><p class="muted">One webhook, a JSON document per event. Tick the events to send.</p>
-<form class="settings-grid" data-section="notify" id="notify-form"></form>
-<div class="toolbar" style="margin-top:10px"><button class="btn primary" data-save>Save</button><button class="btn" id="webhook-test">Send a test</button><span class="muted">The test uses the URL and secret in the fields above, saved or not.</span></div></div>
+<div class="card" id="notifycard" hidden><h2>Notifications</h2>
+<form class="settings-grid notify" data-section="notify" id="notify-form"></form>
+<div class="toolbar" style="margin-top:10px"><button class="btn primary" data-save>Save</button><button class="btn" id="webhook-test">Send a test</button><span class="muted">A JSON document per ticked event to the URL. The test uses the fields as typed, saved or not.</span></div></div>
 <div class="card" id="certcard" hidden><a id="certificate"></a><h2>Certificate</h2><p class="muted">The HTTPS certificate of this server. A new one is served after a restart; the list below says what pins the current one and offers the re-push.</p>
 <dl class="kv" id="cert"></dl>
 <div class="toolbar" style="margin-top:10px"><button class="btn" id="cert-regen">Regenerate self-signed…</button><button class="btn" id="cert-import">Import certificate…</button><a class="btn" href="/api/v1/certificate/download" download>Download</a><button class="btn" id="cert-revert" hidden>Revert to the previous</button><button class="btn danger" id="cert-restart" hidden>Restart to apply</button></div>
@@ -69,7 +69,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!admin) return;
     const res = await api('GET', '/api/v1/settings');
     SPEC = res.settings;
-    for (const f of document.querySelectorAll('form.settings-grid')) f.innerHTML = SPEC.filter(s => s.section === f.dataset.section).map(field).join('');
+    for (const f of document.querySelectorAll('form.settings-grid')) {
+      const rows = SPEC.filter(s => s.section === f.dataset.section);
+      if (f.dataset.section === 'notify') {
+        // one line: URL and secret; one line: the events to send
+        f.innerHTML = `<div class="settings-row">${rows.filter(s => s.kind !== 'bool').map(field).join('')}</div><div class="settings-inline"><span class="muted">Send on</span>${rows.filter(s => s.kind === 'bool').map(field).join('')}</div>`;
+      } else f.innerHTML = rows.map(field).join('');
+    }
     if (!document.getElementById('tzlist')) { const dl = document.createElement('datalist'); dl.id = 'tzlist'; document.body.appendChild(dl); api('GET', '/api/v1/settings/timezones').then(z => { dl.innerHTML = z.map(t => `<option value="${esc(t)}">`).join(''); }); }
     document.getElementById('settings-note').textContent = res.restart_pending ? 'Restart pending: the server exits as soon as no task runs.' : '';
   }

@@ -47,9 +47,9 @@ disconnected), powered on, the guest tools or agent awaited, then deleted.
 `POST /restore-points/{id}/verify`, `POST /maintenance/verify`,
 `hvbackup verify`.
 
-**Notifications.** One webhook (Settings → Notifications) with per-event
-switches: failed backups, damaged restore points, failed replication syncs,
-failed tasks. The JSON document carries `text`/`content` for Slack,
+**Notifications.** One webhook (Settings → Notifications): a URL, an
+optional secret, and a tick per event to send: failed backups, failed
+verifications, failed replications, failed tasks. The JSON document carries `text`/`content` for Slack,
 Mattermost, Discord and Teams incoming webhooks and structured fields for
 everything else; an optional secret signs each request
 (`X-Hvbackup-Signature`). Delivery retries and never blocks the task. **Send

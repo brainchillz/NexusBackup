@@ -52,7 +52,7 @@ def test_send_respects_switches_signs_and_dedups(hook):
     notify._last.clear()
     Hook.got.clear()
     assert notify.send('backup_failed', 'x') is False  # webhook off
-    settings.update({'webhook_enabled': True, 'webhook_url': hook, 'webhook_secret': 's3cret', 'notify_verify_failed': False})
+    settings.update({'webhook_url': hook, 'webhook_secret': 's3cret', 'notify_backup_failed': True})
     assert notify.send('verify_failed', 'Restore point 1 of web01 is damaged') is False  # event switched off
     assert notify.send('backup_failed', 'Backup of web01 failed', 'boom', key='web01', vm='web01') is True
     assert notify.send('backup_failed', 'Backup of web01 failed', 'boom again', key='web01') is False  # within the dedup window
@@ -91,4 +91,4 @@ def test_test_endpoint_reports_answer(hook):
         Hook.status = 200
     with pytest.raises(ValueError):
         notify.test('http://127.0.0.1:9/nothing')
-    settings.update({'webhook_enabled': None, 'webhook_url': None, 'webhook_secret': None, 'notify_verify_failed': None})
+    settings.update({'webhook_url': None, 'webhook_secret': None, 'notify_backup_failed': None, 'notify_task_failed': None})

@@ -1,6 +1,6 @@
 """Notifications: one webhook (Settings > Notifications) that receives a JSON document for
-the events switched on there: a failed backup, a damaged restore point, a failed
-replication sync, a failed task. The body carries `text` and `content`, so a Slack,
+the events ticked there: a failed backup, a damaged restore point, a failed replication
+sync, a failed task. A URL plus a tick is all it takes; there is no separate switch. The body carries `text` and `content`, so a Slack,
 Mattermost, Discord or Teams incoming webhook shows it without a template; everything
 else gets the structured fields. With a secret set, X-Hvbackup-Signature carries
 sha256=HMAC(secret, body). Delivery runs in a thread with retries and never blocks the
@@ -63,7 +63,7 @@ def send(event, title, text='', key=None, **fields):
     from . import settings
     if event not in EVENTS:
         raise ValueError(f'unknown event {event}')
-    if not settings.get('webhook_enabled') or not settings.get('webhook_url') or not settings.get(EVENTS[event]):
+    if not settings.get('webhook_url') or not settings.get(EVENTS[event]):
         return False
     k = (event, key or title)
     now = time.time()

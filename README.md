@@ -179,7 +179,7 @@ so. `GET/PATCH /api/v1/settings` is the API.
 | Concurrency | `HVB_CONCURRENCY` | `2` | Backups, restores and replication syncs running at once per connection; the rest wait in their task. |
 | Catalog copy | `HVB_CATALOG_BACKUP`, `HVB_CATALOG_BACKUP_KEEP` | on, `7` | A daily archive of the catalog, `secret.key` and the certificate into `<repository>/catalog/`. |
 | Verification | `HVB_VERIFY`, `HVB_VERIFY_SCHEDULE`, `HVB_VERIFY_MAX_AGE_DAYS` | on, `0 4 * * 0`, `7` | Scheduled read of every chunk of every restore point not verified within N days; damaged points are flagged. |
-| Notifications | `HVB_WEBHOOK`, `HVB_WEBHOOK_URL`, `HVB_WEBHOOK_SECRET`, `HVB_NOTIFY_*` | off | One webhook, a JSON document per event (failed backup, damaged restore point, failed replication sync, failed task); Slack, Mattermost, Discord and Teams incoming webhooks render it as a message. |
+| Notifications | `HVB_WEBHOOK_URL`, `HVB_WEBHOOK_SECRET`, `HVB_NOTIFY_BACKUP_FAILED`, `HVB_NOTIFY_VERIFY_FAILED`, `HVB_NOTIFY_REPLICATION_FAILED`, `HVB_NOTIFY_TASK_FAILED` | empty, off | One webhook, a JSON document per ticked event; a URL plus a tick is all it takes. Slack, Mattermost, Discord and Teams incoming webhooks render it as a message. |
 | Proxy image | `HVB_PROXY_IMAGE_URL`, `HVB_PROXY_IMAGE_SHA256`, `HVB_PROXY_IMAGE` | Ubuntu 24.04 | The cloud OVA proxies are built from, or a local file (upload one in Settings for offline sites). |
 
 Agent: `/etc/hvbackup/agent.conf` on each proxy VM.

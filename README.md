@@ -673,10 +673,10 @@ UI, CLI, REST API with OpenAPI; vSphere Client plug-in; Nexus Dashboard
 plug-ins (declarative and Python tiers); native, deb and Docker installs,
 conversion included in the container image.
 
-Planned: Windows guests in conversion (virtio driver injection), Nexus SSO and
-OpenID Connect logins, instant recovery (boot from the repository while the
-storage migrates), encryption at rest, file-level restore. The design and the
-Phase 0 measurements are in [PLAN.md](PLAN.md).
+Planned: a certificate manager in Settings, verification jobs, Postgres as an
+alternative catalog, Nexus SSO and OpenID Connect logins, Windows guests in
+conversion (virtio driver injection). The design and the Phase 0 measurements
+are in [PLAN.md](PLAN.md).
 
 ## Licence
 

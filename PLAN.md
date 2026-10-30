@@ -239,11 +239,14 @@ Next, in order:
 Open decisions for the owner: which real VMs join the nightly jobs during the
 soak (vSphere and Proxmox). Order decided 2026-10-30: the remaining Phase 6
 items first, in the order listed under Phase 6 (container-first settings,
-certificate manager, verification jobs, file-level restore, Postgres,
-instant recovery, VDDK last and optional), then SSO (4), then Windows
-conversion (5). Encryption at rest is dropped from the plan (2026-10-30):
-the repository sits on storage the owner controls; disk or filesystem
-encryption under it does the job without a key the server must hold.
+certificate manager, verification jobs, Postgres), then SSO (4), then
+Windows conversion (5). Dropped from the plan on 2026-10-30: encryption at
+rest (the repository sits on storage the owner controls; disk or filesystem
+encryption under it does the job without a key the server must hold),
+file-level restore (not wanted: restores are whole VMs), instant recovery
+(a restore is fast enough through a proxy; the vSphere half would have
+needed an NFS server in front of the chunk store) and the VDDK accelerator
+(not redistributable, and the open-API hot-add path is fast enough).
 
 Where things are written down: this file (design and status), `README.md`
 (install and use), `../OTNOPS-Infra/hosts/testserver.md` (serenity install,
@@ -277,8 +280,8 @@ Proxmox plugin are all clients of the same REST API. Nothing bypasses it.
 ### Non-goals (for now)
 
 - Physical machines, Hyper-V, cloud providers.
-- File-level backup agents inside guests. File-level *restore* from an image
-  is in scope, agents are not.
+- File-level backup agents inside guests, and file-level restore from an
+  image: restores are whole VMs (dropped 2026-10-30).
 - Replacing Proxmox Backup Server for pure-Proxmox shops. Our pitch there is
   one catalog across platforms and cross-restore.
 - Bundling any Broadcom software. VDDK is not used at all (Phase 0 proved the
@@ -457,7 +460,7 @@ Nexus Dashboard plug-ins reuse the same pages. It covers:
 - Protect: pick VMs or whole folders/pools, attach a schedule and retention
   policy, run now.
 - Restore points: browse by VM, restore in place, restore as new VM,
-  restore to the other platform with conversion, file-level browse.
+  restore to the other platform with conversion.
 - Tasks and events, with live progress over a websocket or SSE.
 - Settings: repositories, users and tokens, SSO providers, plug-in
   registration helpers.
@@ -578,9 +581,7 @@ Debian/Ubuntu/RHEL-family current releases, BIOS or UEFI. Everything else is
 reported as unsupported, not converted badly.
 
 Scheduled replication (convert and push every new restore point) is built
-(§0 item 6). Later: instant recovery (boot on Proxmox from an NBD export while
-storage migrates; on vSphere, mount the server's NFS export as a datastore and
-clone back to production storage), see Phase 6.
+(§0 item 6). Instant recovery was considered and dropped (2026-10-30, §0).
 
 ## 6. Technology choices
 
@@ -738,8 +739,9 @@ in both directions with working networking and guest agent.
 
 ### Phase 6 — Hardening and extras
 Done 2026-10-26: scheduled replication, multi-vCenter (§0 item 6). Dropped
-2026-10-30: encryption at rest (see §0). The rest, in the order they are
-built (decided 2026-10-30, ahead of SSO):
+2026-10-30: encryption at rest, file-level restore, instant recovery, the
+VDDK accelerator (see §0). The rest, in the order they are built (decided
+2026-10-30, ahead of SSO):
 
 1. **Container-first settings** (built 2026-10-30, §0 item 7). The settings
    table and the Settings → Server page came first because the certificate
@@ -751,31 +753,11 @@ built (decided 2026-10-30, ahead of SSO):
    alert in the dashboard plug-in); a weekly default that spreads the work;
    optional test boot of a sample on a connection (NICs disconnected, tools
    heartbeat, power off and delete).
-4. **File-level restore.** Mount a restore point's disk read-only from the
-   NBD export (`core/nbd.py`) through libguestfs on the server, browse the
-   filesystem in the UI, download a file or a directory as a tar; Windows
-   NTFS through libguestfs too. No guest agent push in the first cut.
-5. **Postgres.** `db.py` behind a thin adapter so the catalog can live in
+4. **Postgres.** `db.py` behind a thin adapter so the catalog can live in
    Postgres for sites with several servers or a long history; SQLite stays
    the default and the Docker image needs nothing new.
-6. **Instant recovery** (below).
-7. **VDDK accelerator**, optional and last: VMware does not permit
-   redistribution of the VDDK, so this can only be "bring your own VDDK"
-   on the proxy for faster hot-add reads; worth doing only if the proxy's
-   own path proves too slow on real workloads.
 
 Then Phase 4 (SSO), then the Windows half of Phase 5.
-
-**Instant recovery** (kept for last, 2026-10-26). Boot a VM straight from the
-repository and migrate its storage while it runs. Proxmox: attach the
-server's NBD export of the restore point (`core/nbd.py`, already used by
-conversion) to a new VM with a local qcow2 overlay for writes, start it, then
-`qm disk move` onto real storage; most plumbing exists. vSphere: ESXi cannot
-attach NBD, so the server must expose the restore point as an NFS datastore
-(an NFS server fronting the chunk store, new work), the host mounts it,
-registers the VM, powers on, Storage vMotion moves it to production storage.
-The gain over a restore is time to first boot, especially for large thin
-disks over the HTTPS path.
 
 **Certificate manager in Settings** (added 2026-10-25). Today the server's
 TLS is a self-signed pair generated at first start (`core/tls.py`) unless

@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card" id="servercard" hidden><h2>Server</h2><p class="muted">Runtime settings live in the catalog. A field set by an environment variable or <span class="mono">hvbackup.conf</span> is locked here and says so; change it there and restart.</p>
-<form id="settings-form" class="settings-grid" data-section="server"></form>
+<form id="settings-form" class="settings-rows" data-section="server"></form>
 <div class="toolbar" style="margin-top:10px"><button class="btn primary" id="save-settings">Save</button><button class="btn" id="restart">Restart server</button><span class="muted" id="settings-note"></span></div></div>
 <div class="card"><h2>Repository</h2><dl class="kv" id="repo"></dl><div class="toolbar" style="margin-top:10px"><button class="btn" id="gc" hidden>Run garbage collection</button><a class="btn" href="/api/docs" target="_blank">API documentation</a></div></div>
 <div class="card"><h2>API tokens</h2><p class="muted">Tokens act with the owner's role. Send them as <span class="mono">Authorization: Bearer hvb_…</span>; the CLI reads <span class="mono">HVB_TOKEN</span>.</p><div class="toolbar"><button class="btn primary" id="newtoken">New token</button></div><div id="tokens"></div></div>
 <div class="card" id="verifycard" hidden><h2>Verification</h2><p class="muted">Reads the chunks of every restore point on a schedule and checks each against its hash, so damage on the repository disk shows up before a restore needs the data. Damaged points are flagged in the restore point lists and in the dashboard plug-in.</p>
-<form class="settings-grid" data-section="verify" id="verify-form"></form>
+<form class="settings-rows" data-section="verify" id="verify-form"></form>
 <div class="toolbar" style="margin-top:10px"><button class="btn primary" data-save>Save</button><button class="btn" id="verify-now">Verify everything now</button><span class="muted" id="verify-note"></span></div></div>
 <div class="card" id="notifycard" hidden><h2>Notifications</h2>
 <form class="settings-grid notify" data-section="notify" id="notify-form"></form>
@@ -16,12 +16,12 @@
 <div class="toolbar" style="margin-top:10px"><button class="btn" id="cert-regen">Regenerate self-signed…</button><button class="btn" id="cert-import">Import certificate…</button><a class="btn" href="/api/v1/certificate/download" download>Download</a><button class="btn" id="cert-revert" hidden>Revert to the previous</button><button class="btn danger" id="cert-restart" hidden>Restart to apply</button></div>
 <div id="cert-pins"></div></div>
 <div class="card" id="catalogcard" hidden><a id="catalog"></a><h2>Catalog</h2><p class="muted">The catalog (what was backed up, where, by whom), the secret key that unlocks the stored hypervisor credentials and the server certificate. The repository holds the data; with one of these archives it rebuilds a dead server.</p>
-<form class="settings-grid" data-section="catalog" id="catalog-form"></form>
+<form class="settings-rows" data-section="catalog" id="catalog-form"></form>
 <div class="toolbar" style="margin-top:10px"><a class="btn" href="/api/v1/catalog/backup" download>Download a backup now</a><button class="btn" id="catalog-copy">Copy into the repository now</button><button class="btn" id="catalog-upload">Restore from an archive…</button><span class="muted" id="catalog-note"></span></div>
 <div id="catalog-pending" class="notice" hidden></div>
 <div id="catalog-copies"></div></div>
 <div class="card" id="proxyimagecard" hidden><h2>Proxy image</h2><p class="muted">The cloud image proxy VMs are deployed from. Offline sites upload an OVA instead of downloading.</p>
-<form class="settings-grid" data-section="proxy" id="proxy-form"></form>
+<form class="settings-rows" data-section="proxy" id="proxy-form"></form>
 <div class="toolbar" style="margin-top:10px"><button class="btn" id="image-upload">Upload an OVA…</button><button class="btn danger" id="image-forget" hidden>Forget the local image</button><span class="muted" id="image-note"></span></div></div>
 <div class="card" id="themescard" hidden><h2>Themes</h2><p class="muted">Theme drop-ins (Nexus Dashboard's contract: <span class="mono">theme.json</span>, <span class="mono">theme.css</span>, optional <span class="mono">theme.js</span>) as a zip. Everyone picks a theme in the sidebar.</p>
 <div class="toolbar"><button class="btn" id="theme-upload">Upload a theme…</button></div><div id="themes"></div></div>
@@ -56,25 +56,38 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // ── runtime settings ──
   let SPEC = [];
+  function control(sp) {
+    const dis = sp.locked ? 'disabled' : '';
+    if (sp.kind === 'bool') return `<input type="checkbox" name="${sp.key}" ${sp.value ? 'checked' : ''} ${dis}>`;
+    if (sp.kind === 'choice') return `<select name="${sp.key}" ${dis}>${sp.choices.map(c => `<option ${c === sp.value ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>`;
+    if (sp.kind === 'timezone') return `<input name="${sp.key}" value="${esc(sp.value)}" list="tzlist" ${dis}>`;
+    return `<input name="${sp.key}" value="${esc(sp.value)}" ${sp.kind === 'int' ? 'type="number"' : sp.kind === 'secret' ? 'type="password" autocomplete="new-password"' : ''} ${dis} placeholder="${esc(sp.default)}">`;
+  }
+  function badges(sp) {
+    return (sp.locked ? ` <span class="badge plain" title="${esc(sp.env)}">set by the ${esc(sp.source)}</span>` : '') + (sp.restart ? ' <span class="badge plain">restart</span>' : '');
+  }
+  // One row per setting: label, control, help. Rows read top to bottom in the order the server lists them.
+  function row(sp) {
+    return `<label class="slabel" for="set-${sp.key}">${esc(sp.label)}${badges(sp)}</label><div class="sctl">${control(sp).replace('<input', `<input id="set-${sp.key}"`).replace('<select', `<select id="set-${sp.key}"`)}</div><div class="shelp muted">${esc(sp.help || '')}</div>`;
+  }
+  // Compact form for the notifications card: a field with its label above, help below.
   function field(sp) {
-    const id = 'set-' + sp.key, lock = sp.locked ? ` <span class="badge plain" title="${esc(sp.env)}">set by the ${esc(sp.source)}</span>` : '';
+    const id = 'set-' + sp.key;
     let input;
-    if (sp.kind === 'bool') input = `<label class="c"><input type="checkbox" name="${sp.key}" ${sp.value ? 'checked' : ''} ${sp.locked ? 'disabled' : ''}> ${esc(sp.label)}${lock}</label>`;
-    else if (sp.kind === 'choice') input = `<label class="f"><span>${esc(sp.label)}${lock}</span><select name="${sp.key}" ${sp.locked ? 'disabled' : ''}>${sp.choices.map(c => `<option ${c === sp.value ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>`;
-    else if (sp.kind === 'timezone') input = `<label class="f"><span>${esc(sp.label)}${lock}</span><input name="${sp.key}" value="${esc(sp.value)}" list="tzlist" ${sp.locked ? 'disabled' : ''}></label>`;
-    else input = `<label class="f"><span>${esc(sp.label)}${lock}${sp.restart ? ' <span class="badge plain">restart</span>' : ''}</span><input name="${sp.key}" value="${esc(sp.value)}" ${sp.kind === 'int' ? 'type="number"' : sp.kind === 'secret' ? 'type="password" autocomplete="new-password"' : ''} ${sp.locked ? 'disabled' : ''} placeholder="${esc(sp.default)}"></label>`;
+    if (sp.kind === 'bool') input = `<label class="c"><input type="checkbox" name="${sp.key}" ${sp.value ? 'checked' : ''} ${sp.locked ? 'disabled' : ''}> ${esc(sp.label)}${badges(sp)}</label>`;
+    else input = `<label class="f"><span>${esc(sp.label)}${badges(sp)}</span>${control(sp)}</label>`;
     return `<div class="setting" id="${id}">${input}<div class="muted help">${esc(sp.help || '')}</div></div>`;
   }
   async function loadSettings() {
     if (!admin) return;
     const res = await api('GET', '/api/v1/settings');
     SPEC = res.settings;
-    for (const f of document.querySelectorAll('form.settings-grid')) {
+    for (const f of document.querySelectorAll('form.settings-grid, form.settings-rows')) {
       const rows = SPEC.filter(s => s.section === f.dataset.section);
       if (f.dataset.section === 'notify') {
         // one line: URL and secret; one line: the events to send
         f.innerHTML = `<div class="settings-row">${rows.filter(s => s.kind !== 'bool').map(field).join('')}</div><div class="settings-inline"><span class="muted">Send on</span>${rows.filter(s => s.kind === 'bool').map(field).join('')}</div>`;
-      } else f.innerHTML = rows.map(field).join('');
+      } else f.innerHTML = rows.map(row).join('');
     }
     if (!document.getElementById('tzlist')) { const dl = document.createElement('datalist'); dl.id = 'tzlist'; document.body.appendChild(dl); api('GET', '/api/v1/settings/timezones').then(z => { dl.innerHTML = z.map(t => `<option value="${esc(t)}">`).join(''); }); }
     document.getElementById('settings-note').textContent = res.restart_pending ? 'Restart pending: the server exits as soon as no task runs.' : '';
@@ -106,7 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const s = await api('GET', '/api/v1/status');
     document.getElementById('verify-note').innerHTML = `${s.damaged_points ? badge(s.damaged_points + ' damaged', 'bad') + ' ' : ''}${s.unverified_points} never verified · last run ${s.last_verify ? esc(ago(s.last_verify)) : 'never'} · next ${s.next_verify ? esc(fmtTime(s.next_verify)) : 'not scheduled'}`;
   }
-  document.querySelectorAll('form.settings-grid').forEach(f => f.onsubmit = e => { e.preventDefault(); saveSettings().catch(err => toast(err.message)); });
+  document.querySelectorAll('form.settings-grid, form.settings-rows').forEach(f => f.onsubmit = e => { e.preventDefault(); saveSettings().catch(err => toast(err.message)); });
   document.getElementById('restart').onclick = () => confirmModal('Restart server', 'The server exits as soon as no task is running (10 minutes at most) and the service manager starts it again. Browsers reconnect by themselves.', async () => { await api('POST', '/api/v1/server/restart?reason=settings'); loadSettings(); }, 'danger');
 
   // ── certificate ──

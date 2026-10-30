@@ -403,6 +403,12 @@ body.login-page { align-items: center; justify-content: center; }
 }
 
 /* ─── Settings page ─────────────────────── */
+.settings-rows { display: grid; grid-template-columns: max-content minmax(200px, 360px) 1fr; gap: 10px 18px; align-items: center; }
+.settings-rows .slabel { font-size: 13px; color: var(--text); white-space: nowrap; }
+.settings-rows .slabel .badge { margin-left: 6px; vertical-align: 1px; }
+.settings-rows .sctl input:not([type=checkbox]), .settings-rows .sctl select { width: 100%; }
+.settings-rows .shelp { font-size: 12px; line-height: 1.35; }
+@media (max-width: 900px) { .settings-rows { grid-template-columns: max-content 1fr; } .settings-rows .shelp { grid-column: 1 / -1; margin-top: -4px; } }
 .settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px 18px; }
 .settings-grid .setting .help { font-size: 12px; margin-top: 3px; line-height: 1.35; }
 .settings-grid label.f span .badge { margin-left: 6px; vertical-align: 1px; }

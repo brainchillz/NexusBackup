@@ -379,8 +379,10 @@ class JobIn(BaseModel):
 def jobs(user=Depends(current_user)):
     with db.conn() as c:
         out = _rows(c, 'SELECT j.*, c.name AS connection_name FROM jobs j JOIN connections c ON c.id=j.connection_id ORDER BY j.name')
+        from ..core import schedule_text
         for o in out:
             o['vm_names'] = [x['name'] for x in c.execute(f'SELECT name FROM vms WHERE id IN ({",".join("?" * len(o["vm_ids"]))})', o['vm_ids'])] if o['vm_ids'] else []
+            o['schedule_text'] = schedule_text.describe(o['schedule'])
     return out
 
 
@@ -608,8 +610,10 @@ class ReplicationIn(BaseModel):
 def _replication_rows(c, where='', args=()):
     out = _rows(c, f'SELECT r.*, s.name AS connection_name, t.name AS target_connection_name, t.type AS target_type FROM replications r '
                    f'JOIN connections s ON s.id=r.connection_id JOIN connections t ON t.id=r.target_connection_id {where} ORDER BY r.name', args)
+    from ..core import schedule_text
     for o in out:
         o['vm_names'] = [x['name'] for x in c.execute(f'SELECT name FROM vms WHERE id IN ({",".join("?" * len(o["vm_ids"]))})', o['vm_ids'])] if o['vm_ids'] else []
+        o['schedule_text'] = schedule_text.describe(o['schedule']) if o['schedule'] else None
         o['replicas'] = _rows(c, 'SELECT r.*, v.name AS vm_name FROM replicas r JOIN vms v ON v.id=r.vm_id WHERE r.replication_id=? ORDER BY v.name', (o['id'],))
     return out
 
@@ -1000,6 +1004,13 @@ def notifications_test(body: WebhookTest = WebhookTest(), user=Depends(require('
         return notify.test(body.url or None, body.secret)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@r.get('/schedule/preview')
+def schedule_preview(cron: str = '', user=Depends(current_user)):
+    """Plain words and the next firings for a cron expression, in the server's zone."""
+    from ..core import schedule_text
+    return schedule_text.preview(cron)
 
 
 @r.get('/settings/timezones')

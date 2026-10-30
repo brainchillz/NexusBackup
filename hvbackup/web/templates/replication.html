@@ -18,7 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
       { h: 'From', f: j => esc(j.connection_name) },
       { h: 'To', f: j => esc(j.target_connection_name) + ' ' + badge(j.target_type, 'info') },
       { h: 'VMs', f: j => `<span title="${esc(j.vm_names.join(', '))}">${j.vm_names.length}</span>`, cls: 'num' },
-      { h: 'Trigger', f: j => [j.after_backup ? 'after each backup' : '', j.schedule ? `<span class="mono">${esc(j.schedule)}</span>` : ''].filter(Boolean).join(' + ') || '<span class="muted">manual</span>' },
+      { h: 'Trigger', f: j => [j.after_backup ? 'after each backup' : '', j.schedule ? `<span title="${esc(j.schedule)}">${esc(j.schedule_text || j.schedule)}</span>` : ''].filter(Boolean).join(' + ') || '<span class="muted">manual</span>' },
       { h: 'Next run', f: j => j.enabled && j.next_run ? `<span title="${esc(fmtTime(j.next_run))}">${esc(until(j.next_run))}</span>` : '' },
       { h: 'Last run', f: j => (j.last_status ? stateBadge(j.last_status) + ' ' : '') + titleTime(j.last_run) },
       { h: 'Replicas', f: j => j.replicas.length ? j.replicas.map(r => stateBadgeR(r.state)).join(' ') : '<span class="muted">none yet</span>' },

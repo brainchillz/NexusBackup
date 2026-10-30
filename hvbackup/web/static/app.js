@@ -334,13 +334,12 @@ async function jobDialog(job, preset) {
   const vms = await api('GET', '/api/v1/vms');
   const j = job || { name: '', connection_id: (preset && preset.connection_id) || (conns[0] && conns[0].id), vm_ids: (preset && preset.vm_ids) || [],
     schedule: '0 1 * * *', retention: { keep_last: 14, keep_days: 0 }, enabled: true, quiesce: true };
-  const presets = [['0 1 * * *', 'Daily at 01:00'], ['0 */6 * * *', 'Every 6 hours'], ['0 1 * * 0', 'Weekly, Sunday 01:00'], ['', 'Manual only']];
   const body = `
-    <label class="f"><span>Name</span><input name="name" value="${esc(j.name)}" placeholder="e.g. nightly-core"></label>
     <div class="row">
+      <label class="f"><span>Name</span><input name="name" value="${esc(j.name)}" placeholder="e.g. nightly-core"></label>
       <label class="f"><span>Connection</span><select name="connection_id" ${job ? 'disabled' : ''}>${conns.map(c => `<option value="${c.id}" ${c.id === j.connection_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
-      <label class="f"><span>Schedule (cron, in the server's zone${window.SERVER_TZ ? ': ' + esc(window.SERVER_TZ) : ''})</span><input name="schedule" value="${esc(j.schedule || '')}" list="cronp"><datalist id="cronp">${presets.map(p => `<option value="${p[0]}">${p[1]}</option>`).join('')}</datalist></label>
     </div>
+    ${scheduleField('schedule', j.schedule, { optional: true, noneLabel: 'Manual only' })}
     <div class="row">
       <label class="f"><span>Keep last N restore points (0 = unlimited)</span><input name="keep_last" type="number" min="0" value="${esc(j.retention.keep_last || 0)}"></label>
       <label class="f"><span>Keep for days (0 = unlimited)</span><input name="keep_days" type="number" min="0" value="${esc(j.retention.keep_days || 0)}"></label>
@@ -355,7 +354,7 @@ async function jobDialog(job, preset) {
       label: job ? 'Save' : 'Create', cls: 'primary', onClick: async mm => {
         const ids = [...mm.querySelectorAll('#vmlist input:checked')].map(e => Number(e.value));
         if (!ids.length) throw new Error('select at least one VM');
-        const data = { name: val(mm, 'name'), vm_ids: ids, schedule: val(mm, 'schedule') || null,
+        const data = { name: val(mm, 'name'), vm_ids: ids, schedule: scheduleValue(mm, 'schedule') || null,
           retention: { keep_last: Number(val(mm, 'keep_last')), keep_days: Number(val(mm, 'keep_days')) },
           enabled: val(mm, 'enabled'), quiesce: val(mm, 'quiesce') };
         if (job) await api('PATCH', `/api/v1/jobs/${job.id}`, data);
@@ -365,6 +364,7 @@ async function jobDialog(job, preset) {
       }
     }]
   });
+  scheduleInit(m);
   const list = m.querySelector('#vmlist');
   const sel = new Set(j.vm_ids);
   const draw = () => {
@@ -389,7 +389,6 @@ async function replicationDialog(rep) {
   const o = (rep && rep.options) || {};
   const j = rep || { name: '', connection_id: conns[0] && conns[0].id, target_connection_id: (conns[1] || conns[0] || {}).id, vm_ids: [],
     schedule: '', after_backup: true, enabled: true, options: {} };
-  const presets = [['', 'No schedule (after backups only)'], ['0 */4 * * *', 'Every 4 hours'], ['0 2 * * *', 'Daily at 02:00'], ['0 2 * * 0', 'Weekly, Sunday 02:00']];
   const body = `
     <label class="f"><span>Name</span><input name="name" value="${esc(j.name)}" placeholder="e.g. core-to-dr"></label>
     <div class="row">
@@ -404,10 +403,8 @@ async function replicationDialog(rep) {
     <div id="netmap" class="row"></div>
     <p class="muted" id="convnote" style="display:none">The platforms differ: each sync converts the newest restore point first (Linux guests). The copy keeps the identity of its first conversion.</p>
     <p class="err" id="convwarn" style="display:none"></p>
-    <div class="row">
-      <label class="f"><span>Replica name suffix</span><input name="suffix" value="${esc(o.suffix === undefined ? '-replica' : o.suffix)}"></label>
-      <label class="f"><span>Schedule (cron, in the server's zone${window.SERVER_TZ ? ': ' + esc(window.SERVER_TZ) : ''}; optional)</span><input name="schedule" value="${esc(j.schedule || '')}" list="cronr"><datalist id="cronr">${presets.map(p => `<option value="${p[0]}">${p[1]}</option>`).join('')}</datalist></label>
-    </div>
+    <label class="f"><span>Replica name suffix</span><input name="suffix" value="${esc(o.suffix === undefined ? '-replica' : o.suffix)}"></label>
+    ${scheduleField('schedule', j.schedule, { optional: true, noneLabel: 'No schedule (after backups only)' })}
     <label class="c"><input type="checkbox" name="after_backup" ${j.after_backup ? 'checked' : ''}> Sync after every backup of a member VM</label>
     <label class="c"><input type="checkbox" name="new_identity" ${o.new_identity === false ? '' : 'checked'}> New identity for the copy (fresh MAC addresses and BIOS UUID). Untick to keep the original's, for a failover where the original will be gone.</label>
     <label class="c"><input type="checkbox" name="install_tools" ${o.install_tools ? 'checked' : ''}> Cross-platform copies: install the target's guest tools on first boot</label>
@@ -422,7 +419,7 @@ async function replicationDialog(rep) {
         if (!ids.length) throw new Error('select at least one VM');
         const networks = {};
         for (const s of mm.querySelectorAll('#netmap select')) if (s.value) networks[s.dataset.src] = s.value;
-        const data = { name: val(mm, 'name'), vm_ids: ids, schedule: val(mm, 'schedule') || null, after_backup: val(mm, 'after_backup'), enabled: val(mm, 'enabled'),
+        const data = { name: val(mm, 'name'), vm_ids: ids, schedule: scheduleValue(mm, 'schedule') || null, after_backup: val(mm, 'after_backup'), enabled: val(mm, 'enabled'),
           options: { suffix: val(mm, 'suffix'), host: val(mm, 'host') || null, datastore: val(mm, 'datastore') || null, folder: val(mm, 'folder') || null,
             networks, new_identity: val(mm, 'new_identity'), install_tools: val(mm, 'install_tools') } };
         if (!data.schedule) data.clear_schedule = true;
@@ -433,6 +430,7 @@ async function replicationDialog(rep) {
       }
     }]
   });
+  scheduleInit(m);
   const sel = n => m.querySelector(`[name="${n}"]`);
   const list = m.querySelector('#vmlist');
   const chosen = new Set(j.vm_ids);
@@ -501,4 +499,80 @@ async function verifyDialog(rp, done) {
       const r = await api('POST', `/api/v1/restore-points/${rp.id}/verify`, { test_boot: !!val(m, 'test_boot'), connection_id: val(m, 'connection_id') ? Number(val(m, 'connection_id')) : null });
       startedTask(r, 'Verification started'); if (done) done();
     } }] });
+}
+
+/* Schedule picker. Cron stays the storage format; people choose "every N hours", "daily at",
+   "weekly on ... at", "monthly on day ... at", or type cron under "custom". The preview line
+   asks the server for the next firings in its zone.
+   scheduleField(name, cron, {optional, label}) -> HTML; scheduleInit(root) wires it;
+   scheduleValue(root, name) -> cron string ('' for none). */
+const SCHED_DAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['0', 'Sun']];
+function scheduleParse(cron) {
+  const s = { mode: 'daily', n: 6, time: '02:00', dow: ['0'], dom: '1', cron: cron || '' };
+  if (!cron || !cron.trim()) { s.mode = 'none'; return s; }
+  const p = cron.trim().split(/\s+/);
+  if (p.length !== 5) { s.mode = 'custom'; return s; }
+  const [m, h, dom, mon, dow] = p;
+  const hm = () => `${String(Number(h)).padStart(2, '0')}:${String(Number(m)).padStart(2, '0')}`;
+  if (/^\d{1,2}$/.test(m) && /^\*\/\d{1,2}$/.test(h) && dom === '*' && mon === '*' && dow === '*' && Number(m) === 0) { s.mode = 'hourly'; s.n = Number(h.slice(2)); return s; }
+  if (/^\d{1,2}$/.test(m) && /^\d{1,2}$/.test(h)) {
+    s.time = hm();
+    if (dom === '*' && mon === '*' && dow === '*') { s.mode = 'daily'; return s; }
+    if (dom === '*' && mon === '*' && /^[0-7](,[0-7])*$/.test(dow)) { s.mode = 'weekly'; s.dow = dow.split(',').map(d => d === '7' ? '0' : d); return s; }
+    if (/^\d{1,2}$/.test(dom) && mon === '*' && dow === '*' && Number(dom) >= 1 && Number(dom) <= 28) { s.mode = 'monthly'; s.dom = String(Number(dom)); return s; }
+  }
+  s.mode = 'custom';
+  return s;
+}
+function scheduleField(name, cron, o) {
+  o = o || {};
+  const s = scheduleParse(cron);
+  const opt = (v, label) => `<option value="${v}" ${s.mode === v ? 'selected' : ''}>${label}</option>`;
+  const [hh, mm] = s.time.split(':');
+  return `<div class="sched" data-sched="${name}">
+    ${o.label === '' ? '' : `<span class="sched-label">${esc(o.label || 'Schedule')}${window.SERVER_TZ ? ` <span class="muted">(server zone ${esc(window.SERVER_TZ)})</span>` : ''}</span>`}
+    <div class="sched-row">
+      <select data-mode>${o.optional ? opt('none', o.noneLabel || 'No schedule') : ''}${opt('hourly', 'Every few hours')}${opt('daily', 'Every day')}${opt('weekly', 'Every week')}${opt('monthly', 'Every month')}${opt('custom', 'Custom (cron)')}</select>
+      <span data-for="hourly">every <select data-n>${[1, 2, 3, 4, 6, 8, 12].map(n => `<option ${n === s.n ? 'selected' : ''}>${n}</option>`).join('')}</select> hours</span>
+      <span data-for="weekly" class="sched-dow">on ${SCHED_DAYS.map(([v, l]) => `<label class="c"><input type="checkbox" data-dow value="${v}" ${s.dow.includes(v) ? 'checked' : ''}> ${l}</label>`).join('')}</span>
+      <span data-for="monthly">on day <select data-dom>${Array.from({ length: 28 }, (_, i) => `<option ${String(i + 1) === s.dom ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></span>
+      <span data-for="daily weekly monthly">at <select data-h>${Array.from({ length: 24 }, (_, i) => `<option value="${String(i).padStart(2, '0')}" ${String(i).padStart(2, '0') === hh ? 'selected' : ''}>${String(i).padStart(2, '0')}</option>`).join('')}</select>:<select data-m>${['00', '15', '30', '45'].includes(mm) ? '' : `<option selected>${mm}</option>`}${['00', '15', '30', '45'].map(v => `<option ${v === mm ? 'selected' : ''}>${v}</option>`).join('')}</select></span>
+      <span data-for="custom"><input data-cron value="${esc(s.cron)}" placeholder="minute hour day month weekday" class="mono" style="width:220px"></span>
+    </div>
+    <div class="sched-preview muted"></div>
+  </div>`;
+}
+function scheduleValue(root, name) {
+  const el = root.querySelector(`[data-sched="${name}"]`);
+  if (!el) return '';
+  const mode = el.querySelector('[data-mode]').value;
+  const h = el.querySelector('[data-h]').value, m = el.querySelector('[data-m]').value;
+  if (mode === 'none') return '';
+  if (mode === 'hourly') return `0 */${el.querySelector('[data-n]').value} * * *`;
+  if (mode === 'daily') return `${Number(m)} ${Number(h)} * * *`;
+  if (mode === 'weekly') { const d = [...el.querySelectorAll('[data-dow]:checked')].map(e => e.value); return d.length ? `${Number(m)} ${Number(h)} * * ${d.join(',')}` : ''; }
+  if (mode === 'monthly') return `${Number(m)} ${Number(h)} ${el.querySelector('[data-dom]').value} * *`;
+  return el.querySelector('[data-cron]').value.trim();
+}
+function scheduleInit(root) {
+  for (const el of root.querySelectorAll('[data-sched]')) {
+    const name = el.dataset.sched;
+    let timer = null;
+    const refresh = async () => {
+      const mode = el.querySelector('[data-mode]').value;
+      for (const part of el.querySelectorAll('[data-for]')) part.style.display = part.dataset.for.split(' ').includes(mode) ? '' : 'none';
+      const cron = scheduleValue(root, name);
+      const pv = el.querySelector('.sched-preview');
+      if (!cron) { pv.textContent = mode === 'weekly' ? 'pick at least one day' : 'no schedule: runs only when started by hand' + (name === 'schedule' && root.querySelector('[name=after_backup]') ? ' or after a backup' : ''); return; }
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        try {
+          const p = await api('GET', '/api/v1/schedule/preview?cron=' + encodeURIComponent(cron));
+          pv.textContent = p.valid ? `${p.description}. Next: ${(p.next_text || []).join(', ')}` : 'not a valid cron expression';
+        } catch (e) { pv.textContent = ''; }
+      }, 250);
+    };
+    el.addEventListener('change', refresh); el.addEventListener('input', refresh);
+    refresh();
+  }
 }

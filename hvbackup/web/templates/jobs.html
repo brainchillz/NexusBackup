@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="toolbar"><span class="muted">A job backs up a set of VMs on one connection, on a cron schedule, keeping restore points by the retention rule.</span><span class="spacer"></span><button class="btn primary" id="add" hidden>New job</button></div>
+<div class="toolbar"><span class="muted">A job backs up a set of VMs on one connection, on a schedule, keeping restore points by the retention rule.</span><span class="spacer"></span><button class="btn primary" id="add" hidden>New job</button></div>
 <div class="card"><div id="list"></div></div>
 {% endblock %}
 {% block script %}
@@ -15,7 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
       { h: 'Name', f: j => `<b>${esc(j.name)}</b>${j.enabled ? '' : ' ' + badge('disabled', 'warn')}` },
       { h: 'Connection', f: j => esc(j.connection_name) },
       { h: 'VMs', f: j => `<span title="${esc(j.vm_names.join(', '))}">${j.vm_names.length}</span>`, cls: 'num' },
-      { h: 'Schedule', f: j => j.schedule ? `<span class="mono">${esc(j.schedule)}</span>` : '<span class="muted">manual</span>' },
+      { h: 'Schedule', f: j => j.schedule ? `<span title="${esc(j.schedule)}">${esc(j.schedule_text || j.schedule)}</span>` : '<span class="muted">manual</span>' },
       { h: 'Next run', f: j => j.enabled && j.next_run ? `<span title="${esc(fmtTime(j.next_run))}">${esc(until(j.next_run))}</span>` : '' },
       { h: 'Last run', f: j => (j.last_status ? stateBadge(j.last_status) + ' ' : '') + titleTime(j.last_run) },
       { h: 'Retention', f: j => esc([j.retention.keep_last ? `last ${j.retention.keep_last}` : '', j.retention.keep_days ? `${j.retention.keep_days} days` : ''].filter(Boolean).join(', ') || 'keep all') },

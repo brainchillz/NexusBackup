@@ -68,6 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // One row per setting: label, control, help. Rows read top to bottom in the order the server lists them.
   function row(sp) {
+    if (sp.kind === 'cron') return `<label class="slabel">${esc(sp.label)}${badges(sp)}</label><div class="sctl sched-cell">${scheduleField(sp.key, sp.value, { label: '' })}</div>`;
     return `<label class="slabel" for="set-${sp.key}">${esc(sp.label)}${badges(sp)}</label><div class="sctl">${control(sp).replace('<input', `<input id="set-${sp.key}"`).replace('<select', `<select id="set-${sp.key}"`)}</div><div class="shelp muted">${esc(sp.help || '')}</div>`;
   }
   // Compact form for the notifications card: a field with its label above, help below.
@@ -88,6 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // one line: URL and secret; one line: the events to send
         f.innerHTML = `<div class="settings-row">${rows.filter(s => s.kind !== 'bool').map(field).join('')}</div><div class="settings-inline"><span class="muted">Send on</span>${rows.filter(s => s.kind === 'bool').map(field).join('')}</div>`;
       } else f.innerHTML = rows.map(row).join('');
+      scheduleInit(f);
     }
     if (!document.getElementById('tzlist')) { const dl = document.createElement('datalist'); dl.id = 'tzlist'; document.body.appendChild(dl); api('GET', '/api/v1/settings/timezones').then(z => { dl.innerHTML = z.map(t => `<option value="${esc(t)}">`).join(''); }); }
     document.getElementById('settings-note').textContent = res.restart_pending ? 'Restart pending: the server exits as soon as no task runs.' : '';
@@ -96,6 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const changes = {};
     for (const sp of SPEC) {
       if (sp.locked) continue;
+      if (sp.kind === 'cron') { const v = scheduleValue(document, sp.key); if (v !== sp.value) changes[sp.key] = v; continue; }
       const el = document.querySelector(`[name="${sp.key}"]`); if (!el) continue;
       const v = el.type === 'checkbox' ? el.checked : el.value;
       if (sp.kind === 'secret' && /^•+$/.test(v)) continue;

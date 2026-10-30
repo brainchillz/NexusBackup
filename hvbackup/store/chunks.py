@@ -205,24 +205,34 @@ class Repository:
 
     STATS_TTL = 60
 
+    def _walk(self):
+        n = size = 0
+        for a in os.listdir(self.chunks):
+            for b in os.listdir(os.path.join(self.chunks, a)):
+                d = os.path.join(self.chunks, a, b)
+                with os.scandir(d) as it:
+                    for e in it:
+                        n += 1
+                        size += e.stat().st_size
+        self._stats = (time.time(), n, size)
+        self._walking = False
+
     def stats(self):
-        """Chunk count and stored bytes (a walk of every chunk file, cached for a minute: every
-        /status call and the sidebar poll ask for it), free space live."""
+        """Chunk count and stored bytes, free space live. The walk of every chunk file runs
+        once synchronously, then in a background thread when older than a minute: the
+        Proxmox nodes poll /pve/status with a 15 s timeout and mark the storage offline
+        when a walk under backup load takes longer (seen on the lab, 2026-10-30)."""
         now = time.time()
         cached = getattr(self, '_stats', None)
-        if not cached or now - cached[0] > self.STATS_TTL:
-            n = size = 0
-            for a in os.listdir(self.chunks):
-                for b in os.listdir(os.path.join(self.chunks, a)):
-                    d = os.path.join(self.chunks, a, b)
-                    with os.scandir(d) as it:
-                        for e in it:
-                            n += 1
-                            size += e.stat().st_size
-            cached = self._stats = (now, n, size)
+        if not cached:
+            self._walk()
+            cached = self._stats
+        elif now - cached[0] > self.STATS_TTL and not getattr(self, '_walking', False):
+            self._walking = True
+            threading.Thread(target=self._walk, name='repo-stats', daemon=True).start()
         st = os.statvfs(self.path)
         return {'chunks': cached[1], 'stored_bytes': cached[2], 'free_bytes': st.f_bavail * st.f_frsize,
-                'total_bytes': st.f_blocks * st.f_frsize}
+                'total_bytes': st.f_blocks * st.f_frsize, 'stats_age': now - cached[0]}
 
     @staticmethod
     def _write_json(p, obj):

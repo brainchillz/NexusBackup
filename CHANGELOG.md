@@ -55,6 +55,17 @@ everything else; an optional secret signs each request
 (`X-Hvbackup-Signature`). Delivery retries and never blocks the task. **Send
 a test** reports the answer.
 
+**Schedule picker.** Job, replication and verification schedules are chosen
+as "every few hours", "every day at", "every week on … at", "every month on
+day … at" (or custom cron), with a preview of the next three runs in the
+server's zone; lists show the schedule in words.
+
+**Fixed: Proxmox storage "not online" under load.** The node's online check
+hit a server endpoint that walked every chunk file; under backup load the
+walk exceeded the node's 15 s timeout and vzdump refused to start. The walk
+now runs once at start and in the background afterwards; the answer is
+instant.
+
 **Server log and audit log in the UI**, opened from Settings → Logs into a window-sized scrolling viewer, the server log with level and text filters;
 **Restart server** button (exits once no task runs; the shipped unit is now
 `Restart=always`, Compose already restarts); **update notice** in the sidebar

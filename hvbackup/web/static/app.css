@@ -432,3 +432,6 @@ body.login-page { align-items: center; justify-content: center; }
 .modal.wide .body { display: flex; flex-direction: column; min-height: 0; }
 .logbox { font-family: var(--mono); font-size: 11.5px; line-height: 1.4; height: 70vh; overflow: auto; white-space: pre-wrap; margin: 0; padding: 8px 10px; background: var(--hover); border: 1px solid var(--border); }
 .logbox .tablewrap { max-height: none; }
+
+.modal ul.plain { margin: 8px 0 12px; padding-left: 18px; }
+.modal ul.plain li { margin: 2px 0; }

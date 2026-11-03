@@ -1,6 +1,7 @@
 """REST API, versioned under /api/v1. Every mutating call returns a task id or the
 changed object; the UI and CLI are plain clients of these routes."""
 import json
+import logging
 import os
 import threading
 import time
@@ -16,6 +17,7 @@ from ..core import auth, ops, scheduler, secrets, settings, tasks
 from ..store.chunks import repo
 from .deps import COOKIE, current_user, require
 
+log = logging.getLogger(__name__)
 r = APIRouter(prefix='/api/v1')
 
 
@@ -322,8 +324,11 @@ def vms(connection_id: Optional[int] = None, include_templates: bool = False, us
     q += ' ORDER BY c.name, v.name'
     with db.conn() as c:
         out = _rows(c, q, args)
-        jobs = _rows(c, 'SELECT id,name,vm_ids_json,schedule FROM jobs')
-        replicas = {(r['target_connection_id'], r['moref']): r for r in _rows(c, 'SELECT r.id, r.target_connection_id, r.moref, r.state, r.vm_id, r.synced_at, r.replication_id, v.name AS vm_name FROM replicas r JOIN vms v ON v.id=r.vm_id WHERE r.moref IS NOT NULL')}
+        jobs = _rows(c, 'SELECT id,name,vm_ids_json,schedule,enabled FROM jobs')
+        replications = _rows(c, 'SELECT r.id,r.name,r.vm_ids_json,r.enabled,t.name AS target_connection_name FROM replications r JOIN connections t ON t.id=r.target_connection_id')
+        replica_rows = _rows(c, 'SELECT r.id, r.name, r.target_connection_id, r.moref, r.state, r.vm_id, r.synced_at, r.replication_id, v.name AS vm_name, t.name AS target_connection_name '
+                                'FROM replicas r JOIN vms v ON v.id=r.vm_id JOIN connections t ON t.id=r.target_connection_id')
+        replicas = {(r['target_connection_id'], r['moref']): r for r in replica_rows if r['moref']}
         for o in out:
             o['networks'] = sorted({n.get('network') or '' for n in (o.get('spec') or {}).get('nics') or []})
             o.pop('spec', None)
@@ -333,8 +338,14 @@ def vms(connection_id: Optional[int] = None, include_templates: bool = False, us
             o['size_bytes'] = sum(d.get('capacity', 0) for d in (o.get('disks') or []))
             last = c.execute('SELECT id,created,kind,allocated_bytes FROM restore_points WHERE vm_id=? AND deleted=0 ORDER BY id DESC LIMIT 1', (o['id'],)).fetchone()
             o['last_restore_point'] = db.row_to_dict(last)
-            o['restore_points'] = c.execute('SELECT COUNT(*) FROM restore_points WHERE vm_id=? AND deleted=0', (o['id'],)).fetchone()[0]
-            o['jobs'] = [{'id': j['id'], 'name': j['name'], 'schedule': j['schedule']} for j in jobs if o['id'] in (j.get('vm_ids') or [])]
+            o['restore_points'], o['restore_points_bytes'] = c.execute('SELECT COUNT(*), COALESCE(SUM(allocated_bytes),0) FROM restore_points WHERE vm_id=? AND deleted=0', (o['id'],)).fetchone()
+            o['jobs'] = [{'id': j['id'], 'name': j['name'], 'schedule': j['schedule'], 'enabled': bool(j['enabled'])} for j in jobs if o['id'] in (j.get('vm_ids') or [])]
+            o['replications'] = [{'id': r['id'], 'name': r['name'], 'enabled': bool(r['enabled']), 'target_connection_name': r['target_connection_name']}
+                                 for r in replications if o['id'] in (r.get('vm_ids') or [])]
+            o['replicas'] = [{'id': x['id'], 'name': x['name'], 'state': x['state'], 'moref': x['moref'], 'target_connection_name': x['target_connection_name']}
+                             for x in replica_rows if x['vm_id'] == o['id']]
+            # protected = named by a job or a replication; restore points alone are history
+            o['protected'] = bool(o['jobs'] or o['replications'])
             lr = c.execute('SELECT status,finished,error FROM runs WHERE vm_id=? ORDER BY id DESC LIMIT 1', (o['id'],)).fetchone()
             o['last_run'] = db.row_to_dict(lr)
     return out
@@ -348,7 +359,32 @@ def vm(vm_id: int, user=Depends(current_user)):
             raise HTTPException(404)
         v['restore_points'] = _rows(c, 'SELECT id,run_id,created,size_bytes,allocated_bytes,kind,verified,verify_status,verify_error FROM restore_points WHERE vm_id=? AND deleted=0 ORDER BY id DESC', (vm_id,))
         v['runs'] = _rows(c, 'SELECT * FROM runs WHERE vm_id=? ORDER BY id DESC LIMIT 20', (vm_id,))
+        prot = ops.protection_of(c, vm_id)
+        v.update({k: prot[k] for k in ('jobs', 'replications', 'replicas', 'protected')})
     return v
+
+
+class UnprotectIn(BaseModel):
+    """Take VMs out of every backup job and replication (a job or replication left empty is
+    deleted) and forget their replicas. Restore points stay unless delete_restore_points;
+    replica VMs stay on their targets as ordinary VMs unless delete_replica_vms."""
+    vm_ids: list[int] = Field(min_length=1)
+    delete_restore_points: bool = False
+    delete_replica_vms: bool = False
+
+
+@r.post('/vms/unprotect')
+def unprotect_vms(body: UnprotectIn, user=Depends(require('operator'))):
+    out, errors = [], []
+    for vm_id in body.vm_ids:
+        try:
+            out.append(ops.unprotect_vm(vm_id, delete_restore_points=body.delete_restore_points, delete_replica_vms=body.delete_replica_vms, user=user['username']))
+        except Exception as e:  # noqa: BLE001
+            log.exception('unprotect of vm %s failed', vm_id)
+            errors.append(f'vm {vm_id}: {type(e).__name__}: {e}')
+    if errors and not out:
+        raise HTTPException(400, '; '.join(errors))
+    return {'ok': not errors, 'results': out, 'errors': errors}
 
 
 class BackupNow(BaseModel):
@@ -937,7 +973,10 @@ def status(user=Depends(current_user)):
         counts = {k: c.execute(q).fetchone()[0] for k, q in {
             'connections': 'SELECT COUNT(*) FROM connections',
             'vms': 'SELECT COUNT(*) FROM vms v WHERE gone=0 AND is_template=0 AND NOT EXISTS (SELECT 1 FROM replicas r WHERE r.target_connection_id=v.connection_id AND r.moref=v.moref)',
-            'protected_vms': 'SELECT COUNT(DISTINCT vm_id) FROM restore_points WHERE deleted=0',
+            'protected_vms': '''SELECT COUNT(*) FROM vms v WHERE gone=0 AND is_template=0
+                                AND NOT EXISTS (SELECT 1 FROM replicas r WHERE r.target_connection_id=v.connection_id AND r.moref=v.moref)
+                                AND (EXISTS (SELECT 1 FROM jobs j, json_each(j.vm_ids_json) e WHERE j.enabled=1 AND e.value=v.id)
+                                     OR EXISTS (SELECT 1 FROM replications p, json_each(p.vm_ids_json) e WHERE p.enabled=1 AND e.value=v.id))''',
             'replications': 'SELECT COUNT(*) FROM replications WHERE enabled=1',
             'replicas': "SELECT COUNT(*) FROM replicas WHERE moref IS NOT NULL",
             'replicas_stale': "SELECT COUNT(*) FROM replicas r WHERE r.moref IS NOT NULL AND r.state NOT IN ('failed_over','test') AND (r.state IN ('failed','dirty') OR r.source_rp_id IS NOT (SELECT MAX(id) FROM restore_points rp WHERE rp.vm_id=r.vm_id AND rp.deleted=0 AND rp.source_rp_id IS NULL))",

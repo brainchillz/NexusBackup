@@ -7,6 +7,7 @@
   <span class="spacer"></span>
   <span id="selinfo" class="muted"></span>
   <button class="btn primary" id="protect" hidden>Protect selected…</button>
+  <button class="btn danger" id="unprotect" hidden>Unprotect selected…</button>
 </div>
 <div class="card"><div id="list"></div></div>
 {% endblock %}
@@ -16,21 +17,26 @@ document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('list'), sel = new Set();
   let vms = [], conns = [];
   const q = () => ({ f: document.getElementById('filter').value.toLowerCase(), c: document.getElementById('conn').value, p: document.getElementById('prot').value });
-  function protection(v) {
+  function lastBackup(v) {
     if (v.replica_of) return `<span class="muted">standby copy</span>`;
-    if (!v.last_restore_point) return badge('unprotected', 'warn');
+    if (!v.last_restore_point) return '<span class="muted">never</span>';
     const age = Date.now() / 1000 - v.last_restore_point.created;
     return badge(ago(v.last_restore_point.created), age > 2 * 86400 ? 'warn' : 'ok') + ` <span class="muted rp-kind">${esc(v.last_restore_point.kind)}</span>`;
   }
-  function nextRun(v) {
-    const sched = v.jobs.filter(j => j.schedule);
-    if (!sched.length) return v.jobs.length ? '<span class="muted">manual</span>' : '<span class="muted">—</span>';
-    return sched.map(j => `<a href="/jobs" title="${esc(j.schedule)}">${esc(j.name)}</a>`).join(', ');
+  // Protected = named by a backup job or a replication. Restore points alone are history:
+  // a VM taken out of its jobs keeps them until they are deleted, and says so.
+  function protection(v) {
+    if (v.replica_of) return '<span class="muted">—</span>';
+    const links = v.jobs.map(j => `<a href="/jobs" title="${esc(j.schedule ? 'job, ' + j.schedule : 'job, manual only')}${j.enabled ? '' : ' (disabled)'}">${esc(j.name)}</a>${j.enabled ? '' : ' <span class="muted">(off)</span>'}`)
+      .concat(v.replications.map(r => `<a href="/replication" title="replication to ${esc(r.target_connection_name)}${r.enabled ? '' : ' (disabled)'}">${esc(r.name)}</a> <span class="muted">→ ${esc(r.target_connection_name)}</span>`));
+    if (links.length) return badge('protected', 'ok') + ' ' + links.join(', ');
+    if (v.restore_points) return badge('not in a job', 'warn') + ` <span class="muted">${v.restore_points} point${v.restore_points === 1 ? '' : 's'} kept</span>`;
+    return badge('unprotected', 'warn');
   }
   function draw() {
     const { f, c, p } = q();
     const rows = vms.filter(v => (!c || String(v.connection_id) === c)
-      && (!p || (p === 'replicas' ? !!v.replica_of : !v.replica_of && (p === 'protected') === !!v.last_restore_point))
+      && (!p || (p === 'replicas' ? !!v.replica_of : !v.replica_of && (p === 'protected') === !!v.protected))
       && (!f || [v.name, v.guest, v.host, v.connection_name].join(' ').toLowerCase().includes(f)));
     const cols = [];
     if (can('operator')) cols.push({ h: '', cls: 'checkcol', f: v => `<input type="checkbox" data-sel="${v.id}" ${sel.has(v.id) ? 'checked' : ''}>` });
@@ -41,16 +47,18 @@ document.addEventListener('DOMContentLoaded', () => {
       { h: 'Guest', f: v => `<span title="${esc(v.guest)}">${esc((v.guest || '').slice(0, 28))}</span>` + (v.tools === 'guestToolsRunning' ? '' : ' <span class="muted" title="VMware Tools not running: backups are crash-consistent">no tools</span>') },
       { h: 'Host', f: v => `<span class="mono">${esc(v.host)}</span>` },
       { h: 'Size', f: v => esc(fmtBytes(v.size_bytes)), cls: 'num' },
-      { h: 'Last backup', f: protection },
+      { h: 'Protected by', f: protection },
+      { h: 'Last backup', f: lastBackup },
       { h: 'Last run', f: v => v.last_run ? stateBadge(v.last_run.status) : '' },
-      { h: 'Scheduled by', f: nextRun },
       { h: 'Points', f: v => esc(v.restore_points), cls: 'num' },
       { h: '', f: v => (can('operator') ? `<button class="btn sm" data-a="backup" data-id="${v.id}" data-name="${esc(v.name)}">Backup now</button> ` : '') +
           (can('restore') && v.last_restore_point ? `<button class="btn sm" data-a="restore" data-id="${v.id}">Restore</button>` : '') },
     );
     renderTable(el, cols, rows, vms.length ? 'No VMs match.' : 'No VMs in the inventory. Add a connection and refresh it.');
     document.getElementById('selinfo').textContent = sel.size ? sel.size + ' selected' : '';
-    document.getElementById('protect').hidden = !(can('operator') && sel.size);
+    const chosen = vms.filter(v => sel.has(v.id));
+    document.getElementById('protect').hidden = !(can('operator') && chosen.some(v => !v.protected && !v.replica_of));
+    document.getElementById('unprotect').hidden = !(can('operator') && chosen.some(v => v.protected || v.restore_points));
   }
   async function load() {
     [vms, conns] = await Promise.all([api('GET', '/api/v1/vms'), api('GET', '/api/v1/connections')]);
@@ -70,11 +78,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (b.dataset.a === 'restore') restoreDialog(v.last_restore_point, v.name, v.connection_id);
   });
   document.getElementById('protect').onclick = () => {
-    const chosen = vms.filter(v => sel.has(v.id));
+    const chosen = vms.filter(v => sel.has(v.id) && !v.protected && !v.replica_of);
     const cids = new Set(chosen.map(v => v.connection_id));
     if (cids.size > 1) return toast('Select VMs from one connection per job', 5000);
     jobDialog(null, { connection_id: chosen[0].connection_id, vm_ids: chosen.map(v => v.id) });
   };
+  document.getElementById('unprotect').onclick = () => unprotectDialog(vms.filter(v => sel.has(v.id) && (v.protected || v.restore_points)), () => { sel.clear(); load(); });
   document.addEventListener('jobs-changed', () => { sel.clear(); load(); });
 });
 </script>

@@ -435,6 +435,64 @@ def delete_restore_point(rp_id):
         pass
 
 
+def protection_of(c, vm_id):
+    """What protects a VM: the backup jobs and replications naming it (with how many other VMs
+    each has), its replicas on other connections, and its restore points."""
+    jobs, replications = [], []
+    for j in c.execute('SELECT id,name,vm_ids_json,schedule,enabled FROM jobs ORDER BY name').fetchall():
+        ids = json.loads(j['vm_ids_json'] or '[]')
+        if vm_id in ids:
+            jobs.append({'id': j['id'], 'name': j['name'], 'schedule': j['schedule'], 'enabled': bool(j['enabled']), 'others': len(ids) - 1})
+    for r in c.execute('SELECT r.id,r.name,r.vm_ids_json,r.enabled,t.name AS target_connection_name FROM replications r '
+                       'JOIN connections t ON t.id=r.target_connection_id ORDER BY r.name').fetchall():
+        ids = json.loads(r['vm_ids_json'] or '[]')
+        if vm_id in ids:
+            replications.append({'id': r['id'], 'name': r['name'], 'enabled': bool(r['enabled']), 'target_connection_name': r['target_connection_name'], 'others': len(ids) - 1})
+    replicas = [db.row_to_dict(r) for r in c.execute('SELECT r.id,r.name,r.moref,r.state,r.replication_id,r.target_connection_id,t.name AS target_connection_name '
+                                                      'FROM replicas r JOIN connections t ON t.id=r.target_connection_id WHERE r.vm_id=? ORDER BY r.name', (vm_id,)).fetchall()]
+    n, allocated = c.execute('SELECT COUNT(*), COALESCE(SUM(allocated_bytes),0) FROM restore_points WHERE vm_id=? AND deleted=0', (vm_id,)).fetchone()
+    return {'jobs': jobs, 'replications': replications, 'replicas': replicas, 'restore_points': n, 'restore_points_bytes': allocated,
+            'protected': bool(jobs or replications)}
+
+
+def unprotect_vm(vm_id, delete_restore_points=False, delete_replica_vms=False, user=None):
+    """Take a VM out of every backup job and replication. A job or replication left with no VM
+    is deleted. Its replicas are forgotten (the standby copy is no longer maintained); with
+    delete_replica_vms the copies are destroyed on their targets too, otherwise they stay as
+    ordinary VMs there. Restore points are kept unless delete_restore_points; kept points stay
+    restorable and the VM shows as "not in a job" until they are deleted."""
+    from . import replication
+    with db.conn() as c:
+        vm = db.row_to_dict(c.execute('SELECT id,name FROM vms WHERE id=?', (vm_id,)).fetchone())
+        if not vm:
+            raise RuntimeError('VM not found')
+        info = protection_of(c, vm_id)
+        out = {'vm_id': vm_id, 'name': vm['name'], 'jobs_left': [], 'jobs_deleted': [], 'replications_left': [], 'replications_deleted': [],
+               'replicas_forgotten': 0, 'replica_vms_destroyed': 0, 'restore_points_deleted': 0}
+        for table, items, left, gone in (('jobs', info['jobs'], out['jobs_left'], out['jobs_deleted']),
+                                         ('replications', info['replications'], out['replications_left'], out['replications_deleted'])):
+            for it in items:
+                ids = [i for i in json.loads(c.execute(f'SELECT vm_ids_json FROM {table} WHERE id=?', (it['id'],)).fetchone()[0] or '[]') if i != vm_id]
+                if ids:
+                    c.execute(f'UPDATE {table} SET vm_ids_json=? WHERE id=?', (json.dumps(ids), it['id']))
+                    left.append(it['name'])
+                else:
+                    c.execute(f'DELETE FROM {table} WHERE id=?', (it['id'],))
+                    gone.append(it['name'])
+        rp_ids = [r['id'] for r in c.execute('SELECT id FROM restore_points WHERE vm_id=? AND deleted=0 ORDER BY id', (vm_id,)).fetchall()] if delete_restore_points else []
+    scheduler.refresh_next_runs()
+    for r in info['replicas']:
+        res = replication.forget(r['id'], delete_vm=delete_replica_vms, user=user)
+        out['replicas_forgotten'] += 1
+        out['replica_vms_destroyed'] += int(bool(res.get('vm_destroyed')))
+    for rp_id in rp_ids:
+        delete_restore_point(rp_id)
+        out['restore_points_deleted'] += 1
+    db.audit(user or 'api', 'vm_unprotect', f'{vm["name"]} ({vm_id}): ' + ', '.join(
+        f'{k} {v}' for k, v in out.items() if k not in ('vm_id', 'name') and v))
+    return out
+
+
 def gc(task, grace_seconds=3600):
     task.log('garbage collection: marking live chunks')
     res = repo().gc(grace_seconds=grace_seconds, log=task.log)

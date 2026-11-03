@@ -9,6 +9,7 @@ Client side (any machine; HVB_URL + HVB_TOKEN, or ~/.config/hvbackup/client.conf
   hvbackup status [--tsv]             one-line summary, also feeds dashboards
   hvbackup connections list|add|test|refresh|delete
   hvbackup vms list [--connection N]
+  hvbackup vms unprotect <vm>... [--delete-restore-points] [--delete-replica-vms]   out of every job and replication
   hvbackup backup <vm> [--wait]
   hvbackup jobs list|add|run|delete
   hvbackup runs list
@@ -262,6 +263,22 @@ def resolve_connection(c, ref):
 
 def cmd_vms(args):
     c = Client()
+    if args.action == 'unprotect':
+        if not args.vm:
+            sys.exit('vms unprotect: name at least one VM')
+        res = c.call('POST', '/vms/unprotect', json={'vm_ids': [resolve_vm(c, v) for v in args.vm], 'delete_restore_points': args.delete_restore_points,
+                                                     'delete_replica_vms': args.delete_replica_vms})
+        if args.json:
+            return out(args, res)
+        for r in res['results']:
+            bits = [f"left {', '.join(r['jobs_left'] + r['replications_left'])}" if r['jobs_left'] or r['replications_left'] else '',
+                    f"deleted empty {', '.join(r['jobs_deleted'] + r['replications_deleted'])}" if r['jobs_deleted'] or r['replications_deleted'] else '',
+                    f"{r['replicas_forgotten']} replica(s) forgotten" if r['replicas_forgotten'] else '', f"{r['replica_vms_destroyed']} replica VM(s) destroyed" if r['replica_vms_destroyed'] else '',
+                    f"{r['restore_points_deleted']} restore point(s) deleted" if r['restore_points_deleted'] else '']
+            print(f"{r['name']}: unprotected" + ('; ' + '; '.join(b for b in bits if b) if any(bits) else ' (nothing protected it)'))
+        for e in res['errors']:
+            print('error:', e, file=sys.stderr)
+        return None if res['ok'] else sys.exit(1)
     rows = c.call('GET', '/vms', params={'connection_id': args.connection} if args.connection else None)
     view = [{'id': v['id'], 'name': v['name'], 'connection': v['connection_name'], 'power': v['power_state'].replace('powered', ''),
              'size': fmt_bytes(v['size_bytes']), 'cbt': 'yes' if v['cbt_enabled'] else '', 'points': v['restore_points'],
@@ -560,7 +577,10 @@ def main(argv=None):
     p = sub.add_parser('status'); p.add_argument('--tsv', action='store_true'); p.set_defaults(fn=cmd_status)
     p = sub.add_parser('connections'); p.add_argument('action', choices=['list', 'add', 'test', 'refresh', 'delete', 'placement', 'pve-setup', 'pve-storage']); p.add_argument('id', nargs='?'); p.add_argument('--storage-id')
     p.add_argument('--type', choices=['vcenter', 'esxi', 'proxmox'], default='vcenter'); p.add_argument('--name'); p.add_argument('--host'); p.add_argument('--username'); p.add_argument('--password'); p.add_argument('--verify-ssl', action='store_true'); p.set_defaults(fn=cmd_connections)
-    p = sub.add_parser('vms'); p.add_argument('action', choices=['list'], nargs='?', default='list'); p.add_argument('--connection', type=int); p.set_defaults(fn=cmd_vms)
+    p = sub.add_parser('vms', help='inventory: list; unprotect <vm>... takes VMs out of every job and replication')
+    p.add_argument('action', choices=['list', 'unprotect'], nargs='?', default='list'); p.add_argument('vm', nargs='*', help='unprotect: VM ids or names')
+    p.add_argument('--connection', type=int); p.add_argument('--delete-restore-points', action='store_true', help='unprotect: also delete the VMs\' restore points')
+    p.add_argument('--delete-replica-vms', action='store_true', help='unprotect: also destroy their replica VMs on the targets'); p.set_defaults(fn=cmd_vms)
     p = sub.add_parser('backup'); p.add_argument('vm'); p.add_argument('--wait', action='store_true'); p.add_argument('--no-quiesce', action='store_true'); p.set_defaults(fn=cmd_backup)
     p = sub.add_parser('jobs'); p.add_argument('action', choices=['list', 'add', 'run', 'delete']); p.add_argument('id', nargs='?')
     p.add_argument('--name'); p.add_argument('--vms', nargs='*', default=[]); p.add_argument('--connection', type=int); p.add_argument('--schedule', help='cron, e.g. "0 2 * * *"')

@@ -5,6 +5,20 @@ the release was tagged.
 
 ## Unreleased
 
+**Unprotect.** A VM is protected when a job or a replication names it, not
+when it happens to have restore points: the inventory's "Protected by"
+column links to them, "not in a job, N points kept" marks a VM whose
+history outlived its job, and the dashboard count follows. **Unprotect
+selected** in the inventory (shown when a selected VM is protected, next to
+Protect selected) and **Unprotect** on the VM page take a VM out of every
+job and replication at once, delete a job or replication left empty and
+forget its replicas; checkboxes also delete its restore points and destroy
+the replica VMs. `POST /api/v1/vms/unprotect`, `hvbackup vms unprotect`.
+Before this the only path was editing each job.
+
+**Proxmox 9 refuses a body on DELETE** (HTTP 501), which broke forgetting a
+replica with its VM; the client now sends DELETE parameters in the query.
+
 **Container-first settings.** Runtime settings moved from environment
 variables into a `settings` table edited under **Settings** (admin); the
 environment variable or `hvbackup.conf` key, when set, is the bootstrap

@@ -10,6 +10,13 @@
 document.addEventListener('DOMContentLoaded', () => {
   const vmId = {{ vm_id }};
   let v = null;
+  function protectedBy(v) {
+    const links = v.jobs.map(j => `<a href="/jobs">${esc(j.name)}</a>${j.enabled ? '' : ' <span class="muted">(off)</span>'}`)
+      .concat(v.replications.map(r => `<a href="/replication">${esc(r.name)}</a> <span class="muted">→ ${esc(r.target_connection_name)}</span>`));
+    if (links.length) return badge('protected', 'ok') + ' ' + links.join(', ');
+    if (v.restore_points.length) return badge('not in a job', 'warn') + ` <span class="muted">${v.restore_points.length} restore point${v.restore_points.length === 1 ? '' : 's'} kept</span>`;
+    return badge('unprotected', 'warn');
+  }
   async function load() {
     v = await api('GET', `/api/v1/vms/${vmId}`);
     document.getElementById('name').textContent = v.name;
@@ -20,10 +27,13 @@ document.addEventListener('DOMContentLoaded', () => {
       ['CPU / memory', esc(`${spec.cpus || '?'} vCPU, ${fmtBytes((spec.memory_mb || 0) * 1048576)}`)], ['Firmware', esc(spec.firmware) + (spec.secure_boot ? ' + secure boot' : '') + (spec.tpm ? ' + vTPM' : '')],
       ['Changed block tracking', v.cbt_enabled ? badge('enabled', 'ok') : badge('off', 'warn')], ['Datastores', esc((place.datastores || []).join(', '))],
       ['Networks', esc((spec.nics || []).map(n => `${n.network} (${n.model}, ${n.mac})`).join('; '))], ['UUID', `<span class="mono">${esc(v.uuid)}</span>`],
+      ['Protected by', protectedBy(v)],
     ].map(([k, val]) => `<dt>${k}</dt><dd>${val}</dd>`).join('');
     const a = document.getElementById('actions');
-    a.innerHTML = (can('operator') ? '<button class="btn primary" id="backup">Backup now</button>' : '') + (can('restore') && v.restore_points.length ? '<button class="btn" id="restore">Restore latest…</button>' : '');
+    a.innerHTML = (can('operator') ? '<button class="btn primary" id="backup">Backup now</button>' : '') + (can('restore') && v.restore_points.length ? '<button class="btn" id="restore">Restore latest…</button>' : '')
+      + (can('operator') && (v.protected || v.restore_points.length) ? '<button class="btn danger" id="unprotect">Unprotect…</button>' : '');
     if (can('operator')) document.getElementById('backup').onclick = async () => startedTask(await api('POST', `/api/v1/vms/${vmId}/backup`, { quiesce: true }), 'Backup started');
+    if (document.getElementById('unprotect')) document.getElementById('unprotect').onclick = () => unprotectDialog([{ ...v, restore_points: v.restore_points.length, restore_points_bytes: v.restore_points.reduce((a, r) => a + (r.allocated_bytes || 0), 0) }], () => load());
     if (document.getElementById('restore')) document.getElementById('restore').onclick = () => restoreDialog(v.restore_points[0], v.name, v.connection_id);
     renderTable(document.getElementById('disks'), [
       { h: 'Label', f: d => esc(d.label || d.key) }, { h: 'Capacity', f: d => esc(fmtBytes(d.capacity)), cls: 'num' },

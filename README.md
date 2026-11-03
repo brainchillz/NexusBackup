@@ -220,10 +220,21 @@ later release.
 
 ### Web UI
 
-`/` dashboard · `/connections` · `/vms` inventory with Backup now, Restore and
-Protect selected · `/jobs` · `/runs` · `/restore-points` · `/proxies` ·
+`/` dashboard · `/connections` · `/vms` inventory with Backup now, Restore,
+Protect selected and Unprotect selected · `/jobs` · `/runs` · `/restore-points` · `/proxies` ·
 `/tasks` with live logs · `/settings` users, tokens, repository, GC, audit log.
 The OpenAPI UI is at `/api/docs`.
+
+A VM is **protected** when a backup job or a replication names it; the
+inventory's "Protected by" column links to them. Restore points alone are
+history: a VM taken out of its jobs shows "not in a job, N points kept" until
+those points are deleted. **Unprotect** (select VMs in the inventory, or the
+button on a VM's page; `hvbackup vms unprotect <vm>...`;
+`POST /api/v1/vms/unprotect`) takes a VM out of every job and replication in
+one step, deletes a job or replication left with no VM, and forgets its
+replicas; two checkboxes, both off by default, also delete its restore points
+and destroy the replica VMs on their targets. Otherwise the restore points stay
+restorable and the replica VMs stay on the target as ordinary VMs.
 
 ### Roles and tokens
 

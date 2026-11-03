@@ -191,6 +191,40 @@ function modal(o) {
   if (first) first.focus();
   return bg;
 }
+/* unprotectDialog(vms, onDone): take VMs out of every job and replication, forget their
+   replicas; optionally delete their restore points and destroy the replica VMs. Rows come from
+   /vms (jobs, replications, replicas, restore_points as a count). */
+function unprotectDialog(vms, onDone) {
+  const rps = vms.reduce((a, v) => a + (v.restore_points || 0), 0);
+  const bytes = vms.reduce((a, v) => a + (v.restore_points_bytes || 0), 0);
+  const replicas = vms.flatMap(v => (v.replicas || []).map(r => ({ ...r, vm: v.name })));
+  const lines = vms.map(v => {
+    const parts = [];
+    if (v.jobs && v.jobs.length) parts.push('job' + (v.jobs.length > 1 ? 's ' : ' ') + v.jobs.map(j => j.name).join(', '));
+    if (v.replications && v.replications.length) parts.push('replication' + (v.replications.length > 1 ? 's ' : ' ') + v.replications.map(r => `${r.name} → ${r.target_connection_name}`).join(', '));
+    if (v.restore_points) parts.push(`${v.restore_points} restore point${v.restore_points === 1 ? '' : 's'} kept`);
+    return `<li><b>${esc(v.name)}</b>: ${esc(parts.join('; ') || 'nothing protects it')}</li>`;
+  }).join('');
+  const body = `<p>Removes ${vms.length === 1 ? 'this VM' : 'these VMs'} from every backup job and replication. A job or replication left with no VM is deleted. Its restore points stay restorable until deleted.</p>
+    <ul class="plain">${lines}</ul>
+    ${rps ? `<label class="c"><input type="checkbox" name="delete_restore_points"> Also delete the ${rps} restore point${rps === 1 ? '' : 's'}${bytes ? ' (' + esc(fmtBytes(bytes)) + ')' : ''}: the backups are gone for good</label>` : ''}
+    ${replicas.length ? `<p class="muted">Standby cop${replicas.length === 1 ? 'y' : 'ies'} no longer maintained: ${replicas.map(r => esc(`${r.name} on ${r.target_connection_name}`)).join(', ')}.</p>
+    <label class="c"><input type="checkbox" name="delete_replica_vms"> Also destroy the replica VM${replicas.length === 1 ? '' : 's'} on the target (otherwise ${replicas.length === 1 ? 'it stays' : 'they stay'} there as ${replicas.length === 1 ? 'an ordinary VM' : 'ordinary VMs'})</label>` : ''}`;
+  return modal({ title: 'Unprotect', body, buttons: [{ label: 'Cancel' }, { label: 'Unprotect', cls: 'danger', onClick: async m => {
+    const res = await api('POST', '/api/v1/vms/unprotect', { vm_ids: vms.map(v => v.id), delete_restore_points: !!val(m, 'delete_restore_points'), delete_replica_vms: !!val(m, 'delete_replica_vms') });
+    const n = res.results.length;
+    const bits = [`${n} VM${n === 1 ? '' : 's'} unprotected`];
+    const sum = k => res.results.reduce((a, r) => a + (Array.isArray(r[k]) ? r[k].length : r[k] || 0), 0);
+    if (sum('jobs_deleted')) bits.push(`${sum('jobs_deleted')} empty job${sum('jobs_deleted') === 1 ? '' : 's'} deleted`);
+    if (sum('replications_deleted')) bits.push(`${sum('replications_deleted')} empty replication${sum('replications_deleted') === 1 ? '' : 's'} deleted`);
+    if (sum('replica_vms_destroyed')) bits.push(`${sum('replica_vms_destroyed')} replica VM${sum('replica_vms_destroyed') === 1 ? '' : 's'} destroyed`);
+    if (sum('restore_points_deleted')) bits.push(`${sum('restore_points_deleted')} restore point${sum('restore_points_deleted') === 1 ? '' : 's'} deleted`);
+    toast(bits.join(', ') + (res.errors.length ? '; ' + res.errors.join('; ') : ''), res.errors.length ? 8000 : 5000);
+    document.dispatchEvent(new Event('jobs-changed'));
+    if (onDone) onDone();
+  } }] });
+}
+
 function confirmModal(title, text, onOk, cls) {
   return modal({ title, body: `<p>${esc(text)}</p>`, buttons: [{ label: 'Cancel' }, { label: title, cls: cls || 'primary', onClick: onOk }] });
 }

@@ -100,7 +100,7 @@ class Proxmox:
 
     def req(self, method, path, **params):
         params = {k: (int(v) if isinstance(v, bool) else v) for k, v in params.items() if v is not None}
-        kw = {'params': params} if method == 'GET' else {'data': params}
+        kw = {'params': params} if method in ('GET', 'DELETE') else {'data': params}  # pve-http-server refuses a body on DELETE (501)
         r = self.s.request(method, self.base + path, timeout=120, **kw)
         if r.status_code >= 400:
             detail = ''

@@ -2,6 +2,7 @@
 
 repo/
   repo.json            format version, repository id, chunk size
+  stats.json           chunk count and bytes from the last walk (a cache, safe to delete)
   chunks/aa/bb/<hash>  zstd frame of one fixed-size chunk, named by BLAKE3 of the raw bytes
   manifests/<vm uuid>/<restore point id>.json + .<disk>.idx
   staging/             scratch, safe to clear
@@ -9,6 +10,7 @@ repo/
 Zero chunks are never stored: an index entry of 32 zero bytes means "all zeros".
 """
 import json
+import logging
 import os
 import threading
 import secrets
@@ -204,35 +206,59 @@ class Repository:
         return {'removed': removed, 'freed_bytes': freed, 'kept': kept, 'live': len(live)}
 
     STATS_TTL = 60
+    _stats = None
+    _walking = False
+    _stats_lock = threading.Lock()
 
     def _walk(self):
-        n = size = 0
-        for a in os.listdir(self.chunks):
-            for b in os.listdir(os.path.join(self.chunks, a)):
-                d = os.path.join(self.chunks, a, b)
-                with os.scandir(d) as it:
-                    for e in it:
-                        n += 1
-                        size += e.stat().st_size
-        self._stats = (time.time(), n, size)
-        self._walking = False
+        try:
+            n = size = 0
+            for a in os.listdir(self.chunks):
+                for b in os.listdir(os.path.join(self.chunks, a)):
+                    with os.scandir(os.path.join(self.chunks, a, b)) as it:
+                        for e in it:
+                            try:
+                                size += e.stat().st_size
+                            except FileNotFoundError:  # collected while we walked
+                                continue
+                            n += 1
+            self._stats = (time.time(), n, size)
+            try:
+                self._write_json(os.path.join(self.path, 'stats.json'), {'at': self._stats[0], 'chunks': n, 'stored_bytes': size})
+            except OSError:
+                pass
+        except OSError as e:
+            logging.getLogger('hvbackup').warning('repository stats walk failed: %s', e)
+        finally:
+            self._walking = False
 
     def stats(self):
-        """Chunk count and stored bytes, free space live. The walk of every chunk file runs
-        once synchronously, then in a background thread when older than a minute: the
-        Proxmox nodes poll /pve/status with a 15 s timeout and mark the storage offline
-        when a walk under backup load takes longer (seen on the lab, 2026-10-30)."""
+        """Chunk count and stored bytes from the last walk of every chunk file, free space
+        live. The walk never runs in the caller and never twice at once: it takes minutes on
+        a cold cache, and callers that each walked filled the server's whole thread pool
+        after a reboot (serenity, 2026-11-06), while the Proxmox nodes poll /pve/status with
+        a 15 s timeout and mark the storage offline when it is late (lab, 2026-10-30). A
+        background thread walks when the numbers are older than a minute; the last result
+        is kept in stats.json so a restarted server answers with it at once. stats_pending
+        marks the zeros of a repository that has never been walked."""
         now = time.time()
-        cached = getattr(self, '_stats', None)
-        if not cached:
-            self._walk()
+        with self._stats_lock:
+            if self._stats is None:
+                try:
+                    with open(os.path.join(self.path, 'stats.json')) as f:
+                        o = json.load(f)
+                    self._stats = (float(o['at']), int(o['chunks']), int(o['stored_bytes']))
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
             cached = self._stats
-        elif now - cached[0] > self.STATS_TTL and not getattr(self, '_walking', False):
-            self._walking = True
-            threading.Thread(target=self._walk, name='repo-stats', daemon=True).start()
+            if (not cached or now - cached[0] > self.STATS_TTL) and not self._walking:
+                self._walking = True
+                threading.Thread(target=self._walk, name='repo-stats', daemon=True).start()
         st = os.statvfs(self.path)
-        return {'chunks': cached[1], 'stored_bytes': cached[2], 'free_bytes': st.f_bavail * st.f_frsize,
-                'total_bytes': st.f_blocks * st.f_frsize, 'stats_age': now - cached[0]}
+        at, n, size = cached or (None, 0, 0)
+        return {'chunks': n, 'stored_bytes': size, 'free_bytes': st.f_bavail * st.f_frsize,
+                'total_bytes': st.f_blocks * st.f_frsize, 'stats_age': now - at if at else None,
+                'stats_pending': cached is None}
 
     @staticmethod
     def _write_json(p, obj):

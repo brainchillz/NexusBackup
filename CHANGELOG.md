@@ -16,6 +16,17 @@ forget its replicas; checkboxes also delete its restore points and destroy
 the replica VMs. `POST /api/v1/vms/unprotect`, `hvbackup vms unprotect`.
 Before this the only path was editing each job.
 
+**Server unresponsive after a reboot.** The repository's chunk count comes
+from walking every chunk file. Until the first walk of a freshly started
+server finished, every status request (the Proxmox nodes' storage check,
+the dashboard) began a walk of its own; on a cold cache that takes minutes,
+the requests filled the whole thread pool and the server stopped answering
+until the walks ended, with the Proxmox storage shown offline meanwhile.
+The walk now only ever runs once at a time and in the background, the last
+result is kept in `<repository>/stats.json` and served at once after a
+restart, and `stats_pending` in `GET /api/v1/status` marks a repository not
+yet counted.
+
 **Proxmox 9 refuses a body on DELETE** (HTTP 501), which broke forgetting a
 replica with its VM; the client now sends DELETE parameters in the query.
 

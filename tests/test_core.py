@@ -57,6 +57,56 @@ def test_manifest_index_and_gc():
     assert res['removed'] == 1 and rep.has(keep) and not rep.has(drop)
 
 
+def test_stats_walk_runs_once_in_the_background(monkeypatch):
+    """Callers never walk the chunk tree themselves and never start a second walk: after a
+    reboot every status poll walked it and filled the thread pool (serenity, 2026-11-06)."""
+    import threading
+    import time
+    path = tempfile.mkdtemp(prefix='hvb-repo-')
+    rep = Repository(path).open()
+    rep.put_raw(b'a' * 1000)
+    rep.put_raw(b'b' * 1000)
+    walks, release, real = [], threading.Event(), os.listdir
+
+    def slow_listdir(d):
+        if d == rep.chunks:
+            walks.append(1)
+            release.wait(10)
+        return real(d)
+    monkeypatch.setattr(os, 'listdir', slow_listdir)
+    t0 = time.time()
+    first = [rep.stats() for _ in range(50)]
+    assert time.time() - t0 < 5 and len(walks) <= 1
+    assert all(s['stats_pending'] and s['chunks'] == 0 and s['total_bytes'] > 0 for s in first)
+    release.set()
+    for _ in range(100):
+        if not rep.stats()['stats_pending']:
+            break
+        time.sleep(0.05)
+    s = rep.stats()
+    assert s['chunks'] == 2 and s['stored_bytes'] > 0 and not s['stats_pending'] and len(walks) == 1
+    # a restarted server answers with the last walk's numbers before its own walk ends
+    release.clear()
+    again = Repository(path).open()
+    s2 = again.stats()
+    assert s2['chunks'] == 2 and s2['stored_bytes'] == s['stored_bytes'] and not s2['stats_pending']
+    release.set()
+
+    # a walk that fails does not block the next one
+    def broken(d):
+        if d == rep.chunks:
+            raise OSError('gone')
+        return real(d)
+    monkeypatch.setattr(os, 'listdir', broken)
+    rep._stats = (0, 2, 1)
+    rep.stats()
+    for _ in range(100):
+        if not rep._walking:
+            break
+        time.sleep(0.05)
+    assert not rep._walking
+
+
 def test_password_and_roles():
     h = auth.hash_password('s3cret')
     assert auth.check_password('s3cret', h) and not auth.check_password('nope', h)
